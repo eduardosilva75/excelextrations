@@ -1,37 +1,32 @@
-name: Build Windows Executable
+name: Build Executable
 
-on:
-  push:
-    tags:
-      - 'v*'
-  release:
-    types: [created]
+on: [push, workflow_dispatch]
 
 jobs:
   build:
     runs-on: windows-latest
     
     steps:
-    - name: Checkout código
-      uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       
-    - name: Configurar Python
+    - name: Setup Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
+        python-version: '3.10'
         
-    - name: Instalar dependências
+    - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install pyinstaller
         
-    - name: Criar executável
+    - name: Build Executable
       run: |
-        pyinstaller --name=AnaliseVendas --onefile --windowed main.py
-      
-    - name: Upload executável
-      uses: actions/upload-artifact@v3
+        pyinstaller --onefile --name=MyApp main.py
+        echo "Build completed - checking files:"
+        dir dist\
+        
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
       with:
-        name: AnaliseVendas-Windows
-        path: dist/AnaliseVendas.exe
+        name: MyApplication
+        path: dist/MyApp.exe
