@@ -21,6 +21,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pandas numpy matplotlib seaborn scikit-learn openpyxl scipy pyinstaller
+        pip install pyqt5 pyqt5-tools    # ou só pyqt5, mas às vezes precisa do tools também
 
     - name: Build Windows (com consola para ver erros)
       shell: cmd
@@ -56,6 +57,7 @@ jobs:
       run: |
         python3 -m pip install --upgrade pip
         pip3 install pandas numpy matplotlib seaborn scikit-learn openpyxl scipy pyinstaller
+        pip install pyqt5 pyqt5-tools    # ou só pyqt5, mas às vezes precisa do tools também
 
     - name: Build Linux executable
       run: |
