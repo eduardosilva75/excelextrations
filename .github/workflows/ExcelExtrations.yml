@@ -32,16 +32,11 @@ jobs:
         pip install pyinstaller
         
     - name: Verify installations
+      env:
+        PYTHONIOENCODING: utf-8
       run: |
-        echo "=== VERIFICAÇÃO DE INSTALAÇÕES ==="
-        python -c "import pandas; print('✓ pandas', pandas.__version__)"
-        python -c "import numpy; print('✓ numpy', numpy.__version__)"
-        python -c "import matplotlib; print('✓ matplotlib', matplotlib.__version__)"
-        python -c "import seaborn; print('✓ seaborn', seaborn.__version__)"
-        python -c "import sklearn; print('✓ sklearn', sklearn.__version__)"
-        python -c "import openpyxl; print('✓ openpyxl', openpyxl.__version__)"
-        python -c "import scipy; print('✓ scipy', scipy.__version__)"
-        echo "Todas as dependências instaladas com sucesso!"
+        python -c "import pandas, numpy, matplotlib, seaborn, sklearn, openpyxl, scipy"
+        echo Todas as dependências estão instaladas e importáveis
         
     - name: Build with PyInstaller
       run: |
