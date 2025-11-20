@@ -17,15 +17,21 @@ jobs:
       with:
         python-version: '3.10'
         
-    - name: Install dependencies
+    - name: Debug - Check files
+      run: |
+        echo "=== Conteúdo do repositório ==="
+        dir
+        echo "=== Conteúdo do requirements.txt ==="
+        if (Test-Path "requirements.txt") { type requirements.txt } else { echo "requirements.txt NÃO ENCONTRADO" }
+        
+    - name: Install dependencies directly
       run: |
         python -m pip install --upgrade pip
-        echo "Instalando dependências do requirements.txt..."
-        pip install -r requirements.txt
-        echo "Instalando PyInstaller..."
+        echo "Instalando dependências diretamente..."
+        pip install pandas numpy matplotlib seaborn scikit-learn openpyxl scipy
         pip install pyinstaller
         
-    - name: Verify all installations
+    - name: Verify installations
       run: |
         echo "=== VERIFICAÇÃO DE INSTALAÇÕES ==="
         python -c "import pandas; print('✓ pandas', pandas.__version__)"
@@ -34,16 +40,19 @@ jobs:
         python -c "import seaborn; print('✓ seaborn', seaborn.__version__)"
         python -c "import sklearn; print('✓ sklearn', sklearn.__version__)"
         python -c "import openpyxl; print('✓ openpyxl', openpyxl.__version__)"
-        echo "Todas as dependências verificadas!"
+        python -c "import scipy; print('✓ scipy', scipy.__version__)"
+        echo "Todas as dependências instaladas com sucesso!"
         
     - name: Build with PyInstaller
       run: |
-        echo "Iniciando build PyInstaller..."
+        echo "Iniciando build PyInsteller..."
         pyinstaller --onefile --name=AnaliseVendas --clean ^
           --hidden-import=pandas --hidden-import=numpy ^
           --hidden-import=matplotlib --hidden-import=seaborn ^
           --hidden-import=sklearn --hidden-import=openpyxl ^
           --hidden-import=scipy --hidden-import=matplotlib.backends.backend_qt5agg ^
+          --hidden-import=pandas._libs.tslibs.timedeltas ^
+          --hidden-import=pandas._libs.tslibs.nattype ^
           main.py
         
     - name: Check build result
@@ -53,8 +62,11 @@ jobs:
           echo "✓ Executável criado com sucesso!"
           $size = (Get-Item "dist\AnaliseVendas.exe").Length / 1MB
           echo "Tamanho: $([math]::Round($size, 2)) MB"
+          if ($size -lt 20) { echo "AVISO: Executável pode estar incompleto (muito pequeno)" }
         } else {
           echo "✗ Executável NÃO foi criado"
+          echo "Conteúdo da pasta dist:"
+          if (Test-Path "dist") { dir dist } else { echo "Pasta dist não existe" }
           exit 1
         }
         
