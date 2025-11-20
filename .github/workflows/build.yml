@@ -9,70 +9,78 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
 
-    - name: Install dependencies & PyInstaller
-      shell: cmd
-      run: |
-        python -m pip install --upgrade pip
-        pip install pandas numpy matplotlib seaborn scikit-learn openpyxl scipy pyinstaller
-        pip install pyqt5 pyqt5-tools    # ou só pyqt5, mas às vezes precisa do tools também
+      - name: Install dependencies
+        shell: cmd
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy matplotlib seaborn scikit-learn openpyxl scipy pyinstaller
+          pip install PyQt5 PyQt5-tools
 
-    - name: Build Windows (com consola para ver erros)
-      shell: cmd
-      run: |
-        pyinstaller --onefile --console --name=AnaliseVendas-Windows ^
-          --hidden-import=pandas ^
-          --hidden-import=numpy ^
-          --hidden-import=matplotlib ^
-          --hidden-import=seaborn ^
-          --hidden-import=sklearn ^
-          --hidden-import=openpyxl ^
-          --hidden-import=scipy ^
-          main.py
+      - name: Build Windows (com consola para debug)
+        shell: cmd
+        run: |
+          pyinstaller --onefile --console --name=AnaliseVendas-Windows --clean ^
+            --hidden-import=pandas ^
+            --hidden-import=numpy ^
+            --hidden-import=matplotlib ^
+            --hidden-import=seaborn ^
+            --hidden-import=sklearn ^
+            --hidden-import=openpyxl ^
+            --hidden-import=scipy ^
+            --hidden-import=PyQt5.sip ^
+            --hidden-import=PyQt5.QtCore ^
+            --hidden-import=PyQt5.QtGui ^
+            --hidden-import=PyQt5.QtWidgets ^
+            main.py
 
-    - name: Upload Windows exe
-      uses: actions/upload-artifact@v4
-      with:
-        name: AnaliseVendas-Windows
-        path: dist/AnaliseVendas-Windows.exe
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnaliseVendas-Windows
+          path: dist/AnaliseVendas-Windows.exe
 
 
   build-linux:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
 
-    - name: Install dependencies & PyInstaller
-      run: |
-        python3 -m pip install --upgrade pip
-        pip3 install pandas numpy matplotlib seaborn scikit-learn openpyxl scipy pyinstaller
-        pip install pyqt5 pyqt5-tools    # ou só pyqt5, mas às vezes precisa do tools também
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip3 install pandas numpy matplotlib seaborn scikit-learn openpyxl scipy pyinstaller
+          pip3 install PyQt5 PyQt5-tools
 
-    - name: Build Linux executable
-      run: |
-        pyinstaller --onefile --name=AnaliseVendas-Linux \
-          --hidden-import=pandas \
-          --hidden-import=numpy \
-          --hidden-import=matplotlib \
-          --hidden-import=seaborn \
-          --hidden-import=sklearn \
-          --hidden-import=openpyxl \
-          --hidden-import=scipy \
-          main.py
+      - name: Build Linux executable
+        run: |
+          pyinstaller --onefile --name=AnaliseVendas-Linux \
+            --hidden-import=pandas \
+            --hidden-import=numpy \
+            --hidden-import=matplotlib \
+            --hidden-import=seaborn \
+            --hidden-import=sklearn \
+            --hidden-import=openpyxl \
+            --hidden-import=scipy \
+            --hidden-import=PyQt5.sip \
+            --hidden-import=PyQt5.QtCore \
+            --hidden-import=PyQt5.QtGui \
+            --hidden-import=PyQt5.QtWidgets \
+            main.py
 
-    - name: Upload Linux binary + tornar executável
-      uses: actions/upload-artifact@v4
-      with:
-        name: AnaliseVendas-Linux
-        path: dist/AnaliseVendas-Linux
+      - name: Upload Linux executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnaliseVendas-Linux
+          path: dist/AnaliseVendas-Linux
