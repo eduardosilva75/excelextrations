@@ -1,0 +1,42 @@
+# This workflow will upload a Python Package to PyPI when a release is created
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python#publishing-to-package-registries
+
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+ame: Build Executable
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        pip install pyinstaller
+        
+    - name: Build Executable
+      run: |
+        pyinstaller --onefile --name=MyApp main.py
+        echo "Build completed - checking files:"
+        dir dist\
+        
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: MyApplication
+        path: dist/MyApp.exe
+        with:
+          packages-dir: dist/
