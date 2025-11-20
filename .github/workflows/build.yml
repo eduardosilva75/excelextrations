@@ -1,4 +1,4 @@
-name: Build Windows + Linux Executables
+name: Build Windows Executable
 
 on:
   push:
@@ -23,10 +23,10 @@ jobs:
           pip install pandas numpy matplotlib seaborn scikit-learn openpyxl scipy pyinstaller
           pip install PyQt5 PyQt5-tools
 
-      - name: Build Windows (com consola para debug)
+      - name: Build Windows Executable (com consola para debug)
         shell: cmd
         run: |
-          pyinstaller --onefile --console --name=AnaliseVendas-Windows --clean ^
+          pyinstaller --onefile --windowed --name=AnaliseVendas --clean ^
             --hidden-import=pandas ^
             --hidden-import=numpy ^
             --hidden-import=matplotlib ^
@@ -40,47 +40,8 @@ jobs:
             --hidden-import=PyQt5.QtWidgets ^
             main.py
 
-      - name: Upload Windows executable
+      - name: Upload Windows Executable
         uses: actions/upload-artifact@v4
         with:
           name: AnaliseVendas-Windows
-          path: dist/AnaliseVendas-Windows.exe
-
-
-  build-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
-        run: |
-          python3 -m pip install --upgrade pip
-          pip3 install pandas numpy matplotlib seaborn scikit-learn openpyxl scipy pyinstaller
-          pip3 install PyQt5 PyQt5-tools
-
-      - name: Build Linux executable
-        run: |
-          pyinstaller --onefile --name=AnaliseVendas-Linux \
-            --hidden-import=pandas \
-            --hidden-import=numpy \
-            --hidden-import=matplotlib \
-            --hidden-import=seaborn \
-            --hidden-import=sklearn \
-            --hidden-import=openpyxl \
-            --hidden-import=scipy \
-            --hidden-import=PyQt5.sip \
-            --hidden-import=PyQt5.QtCore \
-            --hidden-import=PyQt5.QtGui \
-            --hidden-import=PyQt5.QtWidgets \
-            main.py
-
-      - name: Upload Linux executable
-        uses: actions/upload-artifact@v4
-        with:
-          name: AnaliseVendas-Linux
-          path: dist/AnaliseVendas-Linux
+          path: dist/AnaliseVendas.exe
