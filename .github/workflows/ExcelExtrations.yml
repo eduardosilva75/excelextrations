@@ -3,9 +3,7 @@ name: Build Windows Executable
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:  # Permite execução manual
+  workflow_dispatch:
 
 jobs:
   build:
@@ -25,14 +23,36 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller
         
+    - name: Create test script
+      run: |
+        echo "print('Teste iniciado')" > test_imports.py
+        echo "try:" >> test_imports.py
+        echo "    import pandas as pd; print('✓ pandas OK')" >> test_imports.py
+        echo "    import numpy as np; print('✓ numpy OK')" >> test_imports.py
+        echo "    import matplotlib; print('✓ matplotlib OK')" >> test_imports.py
+        echo "    import seaborn; print('✓ seaborn OK')" >> test_imports.py
+        echo "    import sklearn; print('✓ sklearn OK')" >> test_imports.py
+        echo "    import openpyxl; print('✓ openpyxl OK')" >> test_imports.py
+        echo "    print('Todos os imports OK')" >> test_imports.py
+        echo "except Exception as e: print(f'Erro: {e}')" >> test_imports.py
+        echo "input('Pressione Enter...')" >> test_imports.py
+        
+    - name: Test imports
+      run: python test_imports.py
+        
     - name: Build with PyInstaller
       run: |
-        pyinstaller --onefile --name=AnaliseVendas --hidden-import=pandas --hidden-import=numpy --hidden-import=matplotlib --hidden-import=seaborn --hidden-import=sklearn --hidden-import=openpyxl main.py
+        pyinstaller --onefile --name=AnaliseVendas --clean ^
+          --hidden-import=pandas --hidden-import=numpy ^
+          --hidden-import=matplotlib --hidden-import=seaborn ^
+          --hidden-import=sklearn --hidden-import=openpyxl ^
+          --hidden-import=scipy --add-data="test_imports.py;." ^
+          main.py
         
-    - name: Verify build
+    - name: Verify file size
       run: |
-        dir dist\
-        echo "Build completed successfully!"
+        echo "Tamanho do executável:"
+        Get-ChildItem "dist\AnaliseVendas.exe" | Select-Object Name, @{Name="Size(MB)";Expression={[math]::Round($_.Length/1MB,2)}}
         
     - name: Upload executable
       uses: actions/upload-artifact@v4
