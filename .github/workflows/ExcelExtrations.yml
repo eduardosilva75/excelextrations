@@ -27,7 +27,7 @@ jobs:
         
     - name: Build with PyInstaller
       run: |
-        pyinstaller --onefile --name=AnaliseVendas main.py
+        pyinstaller --onefile --name=AnaliseVendas --hidden-import=pandas --hidden-import=numpy --hidden-import=matplotlib --hidden-import=seaborn --hidden-import=sklearn --hidden-import=openpyxl main.py
         
     - name: Verify build
       run: |
