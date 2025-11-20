@@ -40,14 +40,17 @@ jobs:
         
     - name: Build with PyInstaller
       run: |
-        echo "Iniciando build PyInsteller..."
-        pyinstaller --onefile --name=AnaliseVendas --clean ^
-          --hidden-import=pandas --hidden-import=numpy ^
-          --hidden-import=matplotlib --hidden-import=seaborn ^
-          --hidden-import=sklearn --hidden-import=openpyxl ^
-          --hidden-import=scipy --hidden-import=matplotlib.backends.backend_qt5agg ^
-          --hidden-import=pandas._libs.tslibs.timedeltas ^
-          --hidden-import=pandas._libs.tslibs.nattype ^
+        pyinstaller --onefile --name=AnaliseVendas --clean `
+          --hidden-import=pandas `
+          --hidden-import=numpy `
+          --hidden-import=matplotlib `
+          --hidden-import=seaborn `
+          --hidden-import=sklearn `
+          --hidden-import=openpyxl `
+          --hidden-import=scipy `
+          --hidden-import=matplotlib.backends.backend_qt5agg `
+          --hidden-import=pandas._libs.tslibs.timedeltas `
+          --hidden-import=pandas._libs.tslibs.nattype `
           main.py
         
     - name: Check build result
