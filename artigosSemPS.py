@@ -2,6 +2,14 @@ import os
 import pandas as pd
 import numpy as np
 
+# IMPORTS PARA ML
+from sklearn.ensemble import AdaBoostRegressor, RandomForestRegressor
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.model_selection import cross_val_score
+from sklearn.metrics import mean_absolute_error, r2_score
+
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFileDialog, QMessageBox, QProgressBar, QTableWidget,
@@ -32,10 +40,10 @@ class ArtigosSemPSDialog(QDialog):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Artigos sem Presentation Stock")
-        self.setGeometry(100, 100, 1600, 800)  # Largura maior para mais colunas
+        self.setGeometry(100, 100, 1600, 800)
         self.df = None
         self.df_filtered = None
-        self.df_com_ps = None  # DataFrame com artigos que têm Presentation Stock > 0
+        self.df_com_ps = None
         self.initUI()
 
     def initUI(self):
@@ -82,16 +90,9 @@ class ArtigosSemPSDialog(QDialog):
         self.combo_seccao = QComboBox()
         self.combo_seccao.setMinimumWidth(150)
         self.combo_seccao.addItem("Todas as Secções")
-        self.combo_seccao.currentTextChanged.connect(self.filtrar_por_seccao)
+        self.combo_seccao.currentTextChanged.connect(self.aplicar_filtros)
         filters_layout.addWidget(self.combo_seccao)
 
-        filters_layout.addStretch()
-
-        self.label_contador = QLabel("Total de artigos sem Presentation Stock: 0")
-        self.label_contador.setStyleSheet("font-weight: bold;")
-        filters_layout.addWidget(self.label_contador)
-
-        # NOVO: Filtro por Status
         filters_layout.addWidget(QLabel("Status:"))
 
         self.combo_status = QComboBox()
@@ -100,11 +101,22 @@ class ArtigosSemPSDialog(QDialog):
         self.combo_status.currentTextChanged.connect(self.aplicar_filtros)
         filters_layout.addWidget(self.combo_status)
 
+        # NOVO: Filtro para Stock
+        filters_layout.addWidget(QLabel("Stock:"))
+
+        self.combo_stock = QComboBox()
+        self.combo_stock.setMinimumWidth(150)
+        self.combo_stock.addItem("Todos")
+        self.combo_stock.addItem("Stock > 0")
+        self.combo_stock.addItem("Stock = 0")
+        self.combo_stock.currentTextChanged.connect(self.aplicar_filtros)
+        filters_layout.addWidget(self.combo_stock)
+
         filters_layout.addStretch()
 
         self.label_contador = QLabel("Total de artigos sem Presentation Stock: 0")
         self.label_contador.setStyleSheet("font-weight: bold;")
-        filters_layout.addWidget(self.label_contador)        
+        filters_layout.addWidget(self.label_contador)
 
         layout.addLayout(filters_layout)
         
@@ -135,6 +147,30 @@ class ArtigosSemPSDialog(QDialog):
         
         # Botões de ação
         buttons_layout = QHBoxLayout()
+
+        # Botão ML
+        self.btn_ml = QPushButton("🤖 Calcular com ML")
+        self.btn_ml.setFont(QFont("Arial", 12))
+        self.btn_ml.setMinimumHeight(40)
+        self.btn_ml.setStyleSheet("""
+            QPushButton {
+                background-color: #9C27B0;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #7B1FA2;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        self.btn_ml.clicked.connect(self.calcular_sugestao_ps_ml)
+        self.btn_ml.setEnabled(False)
+        buttons_layout.addWidget(self.btn_ml)
 
         self.btn_exportar_excel = QPushButton("💾 Exportar para Excel")
         self.btn_exportar_excel.setFont(QFont("Arial", 12))
@@ -231,6 +267,7 @@ class ArtigosSemPSDialog(QDialog):
         try:
             seccao_selecionada = self.combo_seccao.currentText()
             status_selecionado = self.combo_status.currentText()
+            stock_selecionado = self.combo_stock.currentText()  # NOVO
             
             # Aplicar filtro por secção
             if seccao_selecionada == "Todas as Secções":
@@ -242,206 +279,286 @@ class ArtigosSemPSDialog(QDialog):
             if 'Status' in df_temp.columns and status_selecionado != "Todos os Status":
                 df_temp = df_temp[df_temp['Status'] == status_selecionado]
             
+            # NOVO: Aplicar filtro por stock
+            if stock_selecionado == "Stock > 0":
+                df_temp = df_temp[df_temp['Stock'] > 0]
+            elif stock_selecionado == "Stock = 0":
+                df_temp = df_temp[df_temp['Stock'] == 0]
+            # "Todos" não aplica filtro
+            
             self.atualizar_tabela(df_temp)
             
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao aplicar filtros: {str(e)}")
 
     def calcular_sugestao_ps(self):
-        """Calcula sugestão de Presentation Stock baseada em múltiplos fatores - Versão Conservadora"""
+        """Método principal - escolhe entre ML ou regras"""
         try:
-            # Primeiro, identificar artigos com Presentation Stock > 0
             if 'Presentation Stock' not in self.df.columns:
-                QMessageBox.warning(self, "Aviso", "Coluna 'Presentation Stock' não encontrada no ficheiro.")
+                QMessageBox.warning(self, "Aviso", "Coluna 'Presentation Stock' não encontrada.")
                 self.df['Sugestão Presentation Stock'] = 0
                 return
+
+            df_com_ps = self.df[self.df['Presentation Stock'] > 0].copy()
             
-            # Separar artigos com Presentation Stock > 0
+            if len(df_com_ps) >= 20:
+                resposta = QMessageBox.question(
+                    self,
+                    "Escolher Método",
+                    f"Encontrados {len(df_com_ps)} artigos com PS > 0.\n\n"
+                    "Deseja usar Machine Learning (mais preciso) ou regras manuais?\n\n"
+                    "• 🤖 ML: Recomendado para dados suficientes\n"
+                    "• 📊 Regras: Mais conservador",
+                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                    QMessageBox.Yes
+                )
+                
+                if resposta == QMessageBox.Yes:
+                    self.calcular_sugestao_ps_ml()
+                    return
+                elif resposta == QMessageBox.No:
+                    self.calcular_sugestao_ps_regras()
+                    return
+                else:
+                    return
+            else:
+                self.calcular_sugestao_ps_regras()
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Erro", f"Erro ao calcular sugestões: {str(e)}")
+            self.df['Sugestão Presentation Stock'] = 0
+
+    def calcular_sugestao_ps_ml(self):
+        """Calcula sugestão de Presentation Stock usando Machine Learning"""
+        try:
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(10)
+            
+            df_ml = self.df.copy()
+            
+            features = [
+                'Unit Sales', 'Sales Value', 'PVP Em Vigor', 'Sup.Pack Size', 
+                'Stock', 'Secção', 'Flow-type'
+            ]
+            
+            features = [f for f in features if f in df_ml.columns]
+            
+            df_treino = df_ml[df_ml['Presentation Stock'] > 0].copy()
+            
+            if len(df_treino) < 10:
+                QMessageBox.warning(self, "Aviso", "Poucos artigos com PS > 0 para treinar modelo.")
+                self.calcular_sugestao_ps_regras()
+                return
+
+            df_prever = df_ml[df_ml['Presentation Stock'] == 0].copy()
+            
+            if df_prever.empty:
+                QMessageBox.information(self, "Info", "Todos os artigos já têm PS definido.")
+                return
+
+            self.progress_bar.setValue(30)
+            
+            X_train, y_train, X_pred, preprocessor = self.preparar_dados_ml(df_treino, df_prever, features)
+            
+            self.progress_bar.setValue(60)
+            
+            modelo, mae_score = self.treinar_modelo_ml(X_train, y_train)
+            
+            self.progress_bar.setValue(80)
+            
+            previsoes = modelo.predict(X_pred)
+            
+            df_prever['Sugestão Presentation Stock'] = np.round(previsoes).astype(int)
+            df_prever['Sugestão Presentation Stock'] = df_prever['Sugestão Presentation Stock'].clip(lower=1, upper=200)
+            
+            df_prever = self.aplicar_logica_pack_size(df_prever)
+            
+            self.df.loc[df_prever.index, 'Sugestão Presentation Stock'] = df_prever['Sugestão Presentation Stock']
+            self.df.loc[self.df['Presentation Stock'] > 0, 'Sugestão Presentation Stock'] = 0
+            
+            self.progress_bar.setValue(100)
+            
+            self.mostrar_metricas_ml(modelo, X_train, y_train, df_prever, mae_score)
+            
+            self.df_filtered = self.df[self.df['Presentation Stock'] == 0].copy()
+            self.aplicar_filtros()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Erro", f"Erro no ML: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            self.calcular_sugestao_ps_regras()
+        finally:
+            self.progress_bar.setVisible(False)
+
+    def preparar_dados_ml(self, df_treino, df_prever, features):
+        """Prepara dados para Machine Learning"""
+        X_train = df_treino[features].copy()
+        y_train = df_treino['Presentation Stock'].values
+        X_pred = df_prever[features].copy()
+        
+        numeric_features = X_train.select_dtypes(include=[np.number]).columns.tolist()
+        categorical_features = X_train.select_dtypes(include=['object']).columns.tolist()
+        
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ('num', StandardScaler(), numeric_features),
+                ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)
+            ])
+        
+        X_train_processed = preprocessor.fit_transform(X_train)
+        X_pred_processed = preprocessor.transform(X_pred)
+        
+        return X_train_processed, y_train, X_pred_processed, preprocessor
+
+    def treinar_modelo_ml(self, X_train, y_train):
+        """Treina modelo com validação"""
+        modelos = {
+            'RandomForest': RandomForestRegressor(n_estimators=100, random_state=42, max_depth=10),
+            'AdaBoost': AdaBoostRegressor(
+                estimator=DecisionTreeRegressor(max_depth=6, min_samples_split=15),
+                n_estimators=100,
+                learning_rate=0.1,
+                random_state=42
+            )
+        }
+        
+        melhor_modelo = None
+        melhor_score = float('inf')
+        melhor_nome = ''
+        
+        for nome, modelo in modelos.items():
+            try:
+                scores = cross_val_score(modelo, X_train, y_train, cv=min(5, len(X_train)), 
+                                       scoring='neg_mean_absolute_error')
+                mae_score = -scores.mean()
+                
+                if mae_score < melhor_score:
+                    melhor_score = mae_score
+                    melhor_modelo = modelo
+                    melhor_nome = nome
+            except:
+                continue
+        
+        if melhor_modelo is not None:
+            melhor_modelo.fit(X_train, y_train)
+            print(f"Melhor modelo: {melhor_nome} com MAE: {melhor_score:.2f}")
+            return melhor_modelo, melhor_score
+        else:
+            modelo = RandomForestRegressor(n_estimators=50, random_state=42)
+            modelo.fit(X_train, y_train)
+            return modelo, 0
+
+    def aplicar_logica_pack_size(self, df_prever):
+        """Aplica lógica de pack size às previsões do ML"""
+        for idx, row in df_prever.iterrows():
+            sugestao = row['Sugestão Presentation Stock']
+            pack_size = row.get('Sup.Pack Size', 1)
+            
+            if pack_size > 1 and pack_size <= 12:
+                packs = max(1, round(sugestao / pack_size))
+                df_prever.at[idx, 'Sugestão Presentation Stock'] = packs * pack_size
+            elif pack_size > 12:
+                df_prever.at[idx, 'Sugestão Presentation Stock'] = max(3, sugestao)
+        
+        return df_prever
+
+    def mostrar_metricas_ml(self, modelo, X_train, y_train, df_prever, mae_score):
+        """Mostra métricas do modelo"""
+        y_pred_train = modelo.predict(X_train)
+        
+        mae = mean_absolute_error(y_train, y_pred_train)
+        r2 = r2_score(y_train, y_pred_train)
+        
+        sugestoes = df_prever['Sugestão Presentation Stock']
+        
+        QMessageBox.information(
+            self,
+            "ML Concluído ✅",
+            f"Modelo {modelo.__class__.__name__} treinado com sucesso!\n\n"
+            f"📊 Métricas do modelo:\n"
+            f"• MAE (validação): {mae_score:.1f} unidades\n"
+            f"• MAE (treino): {mae:.1f} unidades\n"
+            f"• R²: {r2:.2f}\n\n"
+            f"📦 Sugestões geradas:\n"
+            f"• Artigos: {len(df_prever)}\n"
+            f"• Média: {sugestoes.mean():.1f} unid.\n"
+            f"• Mediana: {sugestoes.median():.1f} unid.\n"
+            f"• Range: {sugestoes.min()} - {sugestoes.max()} unid."
+        )
+
+    def calcular_sugestao_ps_regras(self):
+        """Método baseado em regras (fallback) - VERSÃO SIMPLIFICADA"""
+        try:
+            if 'Presentation Stock' not in self.df.columns:
+                return
+
             self.df_com_ps = self.df[self.df['Presentation Stock'] > 0].copy()
             
             if self.df_com_ps.empty:
-                QMessageBox.warning(self, "Aviso", "Não foram encontrados artigos com Presentation Stock > 0 para análise.")
-                self.df['Sugestão Presentation Stock'] = 0
+                self.df['Sugestão Presentation Stock'] = 3
                 return
-            
-            # Calcular estatísticas por secção E flow-type para artigos com Presentation Stock
-            stats_por_grupo = self.df_com_ps.groupby(['Secção', 'Flow-type']).agg({
-                'Presentation Stock': ['count', 'mean', 'median', 'min', 'max'],
-                'Unit Sales': ['mean', 'median'],
-                'Sales Value': ['mean', 'median'],
-                'PVP Em Vigor': 'median',
-                'Sup.Pack Size': 'median'
-            }).round(2)
-            
-            # Para fallback, calcular só por secção
+
             stats_por_seccao = self.df_com_ps.groupby('Secção').agg({
-                'Presentation Stock': ['count', 'mean', 'median', 'min', 'max'],
-                'Unit Sales': ['mean', 'median'],
-                'Sales Value': ['mean', 'median'],
-                'PVP Em Vigor': 'median',
-                'Sup.Pack Size': 'median'
+                'Presentation Stock': ['median', 'min'],
+                'Unit Sales': 'median'
             }).round(2)
-            
-            # Para cada artigo sem Presentation Stock, calcular sugestão
+
             artigos_sem_ps = self.df[self.df['Presentation Stock'] == 0].copy()
             artigos_sem_ps['Sugestão Presentation Stock'] = 0
-            
+
             for idx, artigo in artigos_sem_ps.iterrows():
                 seccao = artigo['Secção']
-                flow_type = artigo.get('Flow-type', 'N/A')
-                unit_sales = artigo['Unit Sales'] if pd.notna(artigo['Unit Sales']) else 0
-                sales_value = artigo.get('Sales Value', 0) if pd.notna(artigo.get('Sales Value', 0)) else 0
-                pvp = artigo.get('PVP Em Vigor', 0) if pd.notna(artigo.get('PVP Em Vigor', 0)) else 0
-                pack_size = artigo.get('Sup.Pack Size', 1) if pd.notna(artigo.get('Sup.Pack Size', 1)) else 1
-                
-                # Tentar encontrar grupo mais específico primeiro (secção + flow-type)
-                grupo_chave = (seccao, flow_type)
-                
-                if grupo_chave in stats_por_grupo.index:
-                    # Usar estatísticas do grupo específico
-                    ps_median = stats_por_grupo.loc[grupo_chave, ('Presentation Stock', 'median')]
-                    ps_min = stats_por_grupo.loc[grupo_chave, ('Presentation Stock', 'min')]
-                    unit_sales_median = stats_por_grupo.loc[grupo_chave, ('Unit Sales', 'median')]
-                    grupo_count = stats_por_grupo.loc[grupo_chave, ('Presentation Stock', 'count')]
-                    
-                    # Base: usar o MÍNIMO do grupo como referência mais conservadora
-                    sugestao_base = max(ps_min, ps_median * 0.5)  # Usar mínimo ou metade da mediana
-                    
-                elif seccao in stats_por_seccao.index:
-                    # Fallback: usar só estatísticas da secção
+                unit_sales = float(artigo['Unit Sales']) if pd.notna(artigo['Unit Sales']) else 0.0
+                pvp = float(artigo.get('PVP Em Vigor', 0)) if pd.notna(artigo.get('PVP Em Vigor')) else 0.0
+                pack_size = int(artigo.get('Sup.Pack Size', 1)) if pd.notna(artigo.get('Sup.Pack Size')) else 1
+
+                if seccao in stats_por_seccao.index:
                     ps_median = stats_por_seccao.loc[seccao, ('Presentation Stock', 'median')]
                     ps_min = stats_por_seccao.loc[seccao, ('Presentation Stock', 'min')]
                     unit_sales_median = stats_por_seccao.loc[seccao, ('Unit Sales', 'median')]
-                    grupo_count = stats_por_seccao.loc[seccao, ('Presentation Stock', 'count')]
                     
-                    sugestao_base = max(ps_min, ps_median * 0.5)  # Mais conservador
-                else:
-                    # Se não há dados da secção, usar sugestão mínima de 3 unidades
-                    artigos_sem_ps.at[idx, 'Sugestão Presentation Stock'] = 3
-                    continue
-                
-                # --- FACTOR 1: Vendas do artigo (28 DIAS - mais conservador) ---
-                fator_vendas = 1.0
-                
-                if unit_sales_median > 0:
-                    if unit_sales == 0:
-                        # Artigo sem vendas em 28 dias - sugestão muito conservadora
-                        fator_vendas = 0.1  # Apenas 10% da base
-                    elif unit_sales <= 2:  # 2 ou menos vendas em 28 dias
-                        fator_vendas = 0.3
-                    elif unit_sales < (unit_sales_median * 0.1):
-                        # Vendas muito baixas (<10% da mediana)
-                        fator_vendas = 0.4
-                    elif unit_sales < (unit_sales_median * 0.3):
-                        # Vendas baixas (<30% da mediana)
-                        fator_vendas = 0.6
-                    elif unit_sales > (unit_sales_median * 3):
-                        # Vendas altas (>300% da mediana)
-                        fator_vendas = 1.3  # Reduzido de 1.5
-                    elif unit_sales > (unit_sales_median * 2):
-                        # Vendas acima da média (>200% da mediana)
-                        fator_vendas = 1.1  # Reduzido de 1.3
+                    sugestao_base = max(ps_min, ps_median * 0.5)
+                    
+                    # Fator vendas simplificado
+                    if unit_sales_median > 0:
+                        ratio = unit_sales / unit_sales_median
+                        if unit_sales == 0:
+                            fator_vendas = 0.1
+                        elif ratio < 0.3: fator_vendas = 0.5
+                        elif ratio < 1.0: fator_vendas = 0.8
+                        elif ratio < 2.0: fator_vendas = 1.5
+                        elif ratio < 4.0: fator_vendas = 2.5
+                        else: fator_vendas = 3.5
                     else:
-                        # Vendas normais
                         fator_vendas = 1.0
-                
-                # --- FACTOR 2: Valor das vendas (mais agressivo para preços altos) ---
-                fator_valor = 1.0
-                if pvp > 0:
-                    # Reduzir drasticamente para artigos de alto valor
-                    if pvp > 100:  # Muito alto valor
-                        fator_valor = 0.3
-                    elif pvp > 50:  # Alto valor
-                        fator_valor = 0.5
-                    elif pvp > 20:  # Valor médio-alto
-                        fator_valor = 0.7
-                    elif pvp > 10:  # Valor médio
-                        fator_valor = 0.9
-                
-                # --- FACTOR 3: Tipo de fluxo ---
-                fator_flow = 1.0
-                if flow_type in ['PBSPC', 'PBsPC']:  # Produtos básicos/promocionais
-                    fator_flow = 1.1  # Ligeiro aumento
-                elif flow_type in ['NOV', 'NEW']:  # Novidades
-                    fator_flow = 1.2  # Stock inicial moderado
-                elif flow_type in ['SLOW', 'LENTO']:  # Vendas lentas
-                    fator_flow = 0.5  # Redução significativa
-                
-                # --- FACTOR 4: Pack Size (mais inteligente) ---
-                fator_pack = 1.0
-                sugestao_antes_pack = sugestao_base * fator_vendas * fator_valor * fator_flow
-                
-                # Só ajustar ao pack se fizer sentido
-                if pack_size > 1:
-                    if pack_size <= 24:
-                        # Packs pequenos: ajustar ao pack completo mas mínimo de 3 unidades
-                        packs_sugeridos = max(1, round(sugestao_antes_pack / pack_size))
-                        sugestao_ajustada = packs_sugeridos * pack_size
-                        # Garantir mínimo de 3 unidades mesmo para packs
-                        if packs_sugeridos == 1 and pack_size < 3:
-                            sugestao_ajustada = 3
-                    elif pack_size <= 36:
-                        # Packs médios: mais flexibilidade
-                        if sugestao_antes_pack >= pack_size * 1.5:
-                            packs_sugeridos = max(1, round(sugestao_antes_pack / pack_size))
-                            sugestao_ajustada = packs_sugeridos * pack_size
-                        else:
-                            # Não justifica pack completo, manter unidades com mínimo de 3
-                            sugestao_ajustada = max(3, sugestao_antes_pack)
+                    
+                    # Fator preço
+                    fator_valor = 1.0
+                    if pvp > 50: fator_valor = 0.6
+                    elif pvp > 20: fator_valor = 0.8
+                    
+                    sugestao = sugestao_base * fator_vendas * fator_valor
+                    
+                    # Ajustar pack size
+                    if pack_size > 1 and pack_size <= 12:
+                        packs = max(1, round(sugestao / pack_size))
+                        sugestao = packs * pack_size
                     else:
-                        # Packs grandes (>36): só ajustar se vendas justificarem
-                        if sugestao_antes_pack >= pack_size * 2:
-                            packs_sugeridos = max(1, round(sugestao_antes_pack / pack_size))
-                            sugestao_ajustada = packs_sugeridos * pack_size
-                        else:
-                            # Manter em unidades para packs grandes com mínimo de 3
-                            sugestao_ajustada = max(3, sugestao_antes_pack)
+                        sugestao = max(3, sugestao)
+                    
+                    sugestao_final = int(round(min(sugestao, 100)))  # Limite máximo
+                    artigos_sem_ps.at[idx, 'Sugestão Presentation Stock'] = max(3, sugestao_final)
                 else:
-                    sugestao_ajustada = max(3, sugestao_antes_pack)  # Mínimo de 3 unidades
-                
-                # --- LIMITES FINAIS ---
-                # Mínimo: 3 unidades (alterado de 1)
-                sugestao_minima = 3
-                
-                # Máximo: mais conservador
-                if seccao in stats_por_seccao.index:
-                    ps_max_seccao = stats_por_seccao.loc[seccao, ('Presentation Stock', 'max')]
-                    sugestao_maxima = min(ps_max_seccao, ps_median * 2)  # Máximo 2x a mediana
-                else:
-                    sugestao_maxima = ps_median * 2
-                
-                # Aplicar limites
-                sugestao_final = max(sugestao_minima, min(sugestao_ajustada, sugestao_maxima))
-                
-                # Arredondar para inteiro
-                sugestao_final = int(round(sugestao_final))
-                
-                artigos_sem_ps.at[idx, 'Sugestão Presentation Stock'] = sugestao_final
-            
-            # Atualizar o DataFrame principal com as sugestões
+                    artigos_sem_ps.at[idx, 'Sugestão Presentation Stock'] = 3
+
             self.df.loc[artigos_sem_ps.index, 'Sugestão Presentation Stock'] = artigos_sem_ps['Sugestão Presentation Stock']
-            
-            # Para artigos com Presentation Stock > 0, definir sugestão como 0
             self.df.loc[self.df['Presentation Stock'] > 0, 'Sugestão Presentation Stock'] = 0
             
-            # Log de estatísticas
-            sugestoes = artigos_sem_ps['Sugestão Presentation Stock']
-            QMessageBox.information(
-                self, 
-                "Sugestões Calculadas", 
-                f"Sugestões de Presentation Stock calculadas para {len(artigos_sem_ps)} artigos.\n\n"
-                f"Estatísticas das sugestões:\n"
-                f"• Média: {sugestoes.mean():.1f} unidades\n"
-                f"• Mediana: {sugestoes.median():.1f} unidades\n"
-                f"• Mínimo: {sugestoes.min()} unidades\n"
-                f"• Máximo: {sugestoes.max()} unidades\n\n"
-                f"Baseado em análise conservadora de {len(self.df_com_ps)} artigos com PS > 0."
-            )
+            QMessageBox.information(self, "Concluído", "Sugestões calculadas usando regras manuais.")
             
         except Exception as e:
-            QMessageBox.critical(self, "Erro", f"Erro ao calcular sugestões de Presentation Stock: {str(e)}")
-            import traceback
-            print(traceback.format_exc())
+            QMessageBox.critical(self, "Erro", f"Erro nas regras manuais: {str(e)}")
             self.df['Sugestão Presentation Stock'] = 0
 
     def carregar_ficheiro(self):
@@ -457,10 +574,8 @@ class ArtigosSemPSDialog(QDialog):
                 self.progress_bar.setVisible(True)
                 self.progress_bar.setValue(0)
                 
-                # Determinar o tipo de ficheiro pela extensão
                 file_extension = file_path.lower().split('.')[-1]
                 
-                # Carregar o ficheiro conforme a extensão
                 if file_extension in ['xlsx', 'xls']:
                     self.df = pd.read_excel(file_path)
                 elif file_extension == 'csv':
@@ -472,7 +587,6 @@ class ArtigosSemPSDialog(QDialog):
                 
                 self.progress_bar.setValue(50)
                 
-                # Verificar se as colunas necessárias existem
                 colunas_necessarias = ['Sku', 'Description', 'Unit Sales', 'Stock', 'Merc.Struct Code', 'Presentation Stock']
                 colunas_faltantes = [col for col in colunas_necessarias if col not in self.df.columns]
                 
@@ -485,28 +599,19 @@ class ArtigosSemPSDialog(QDialog):
                     self.progress_bar.setVisible(False)
                     return
                 
-                # Extrair secção do Merc.Struct Code
                 self.df['Secção'] = self.df['Merc.Struct Code'].astype(str).str[2:4]
-                
-                # Adicionar coluna de sugestão Presentation Stock
                 self.df['Sugestão Presentation Stock'] = 0
                 
-                # Calcular sugestões de Presentation Stock
                 self.calcular_sugestao_ps()
                 
-                # Filtrar apenas artigos com Presentation Stock = 0
                 self.df_filtered = self.df[self.df['Presentation Stock'] == 0].copy()
-                
-                # Ordenar por secção e depois por Unit Sales (decrescente)
                 self.df_filtered = self.df_filtered.sort_values(['Secção', 'Unit Sales'], ascending=[True, False])
                 
-                # Preencher combobox com secções únicas dos artigos sem Presentation Stock
                 seccoes = sorted(self.df_filtered['Secção'].unique())
                 self.combo_seccao.clear()
                 self.combo_seccao.addItem("Todas as Secções")
                 self.combo_seccao.addItems([str(sec) for sec in seccoes])
                 
-                # NOVO: Preencher combobox com status únicos
                 if 'Status' in self.df_filtered.columns:
                     status_unicos = sorted(self.df_filtered['Status'].dropna().unique())
                     self.combo_status.clear()
@@ -519,18 +624,17 @@ class ArtigosSemPSDialog(QDialog):
                 
                 self.progress_bar.setValue(100)
                 
-                # Atualizar interface
                 self.label_file.setText(os.path.basename(file_path))
                 self.btn_exportar_excel.setEnabled(True)
                 self.btn_exportar_pdf.setEnabled(True)
-                self.aplicar_filtros()  # Mudado de filtrar_por_seccao para aplicar_filtros
+                self.btn_ml.setEnabled(True)
+                self.aplicar_filtros()
                 
                 QMessageBox.information(
                     self, 
                     "Sucesso", 
                     f"Ficheiro carregado com sucesso!\n"
-                    f"{len(self.df_filtered)} artigos sem Presentation Stock encontrados.\n"
-                    f"{len(self.df_com_ps) if self.df_com_ps is not None else 0} artigos com Presentation Stock analisados."
+                    f"{len(self.df_filtered)} artigos sem Presentation Stock encontrados."
                 )
                 
         except Exception as e:
@@ -585,8 +689,6 @@ class ArtigosSemPSDialog(QDialog):
             "Por favor, selecione manualmente o delimitador e encoding."
         )
         
-        # Implementar diálogo para seleção manual se necessário
-        # Por enquanto, tentar com valores padrão
         try:
             df = pd.read_csv(file_path, delimiter=',', encoding='latin-1')
             df.columns = df.columns.str.strip()
@@ -599,26 +701,8 @@ class ArtigosSemPSDialog(QDialog):
             except Exception as e:
                 raise Exception(f"Não foi possível ler o ficheiro CSV: {str(e)}")
 
-    def filtrar_por_seccao(self):
-        if self.df_filtered is None:
-            return
-        
-        try:
-            seccao_selecionada = self.combo_seccao.currentText()
-            
-            if seccao_selecionada == "Todas as Secções":
-                df_temp = self.df_filtered.copy()
-            else:
-                df_temp = self.df_filtered[self.df_filtered['Secção'] == seccao_selecionada].copy()
-            
-            self.atualizar_tabela(df_temp)
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Erro", f"Erro ao filtrar: {str(e)}")
-
     def atualizar_tabela(self, df):
         try:
-            # Configurar tabela com 9 colunas
             self.table.setRowCount(len(df))
             self.table.setColumnCount(9)
             self.table.setHorizontalHeaderLabels([
@@ -626,7 +710,6 @@ class ArtigosSemPSDialog(QDialog):
                 'Unit Sales', 'Flow-type', 'Secção', 'Sugestão Presentation Stock'
             ])
             
-            # Preencher tabela
             for row_idx, (_, row) in enumerate(df.iterrows()):
                 # Sku
                 item_sku = QTableWidgetItem(str(row['Sku']))
@@ -655,11 +738,10 @@ class ArtigosSemPSDialog(QDialog):
                 item_stock = QTableWidgetItem(f"{stock_value:,.0f}")
                 item_stock.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 
-                # Colorir stock baixo
                 if stock_value == 0:
-                    item_stock.setBackground(QColor(255, 200, 200))  # Vermelho claro para stock 0
+                    item_stock.setBackground(QColor(255, 200, 200))
                 elif stock_value < (row.get('Sugestão Presentation Stock', 0) or 0):
-                    item_stock.setBackground(QColor(255, 255, 200))  # Amarelo para stock abaixo da sugestão
+                    item_stock.setBackground(QColor(255, 255, 200))
                 
                 self.table.setItem(row_idx, 4, item_stock)
                 
@@ -668,11 +750,10 @@ class ArtigosSemPSDialog(QDialog):
                 item_unit_sales = QTableWidgetItem(f"{unit_sales_value:,.0f}")
                 item_unit_sales.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 
-                # Colorir vendas altas
                 if unit_sales_value > 100:
-                    item_unit_sales.setBackground(QColor(200, 255, 200))  # Verde claro para vendas altas
+                    item_unit_sales.setBackground(QColor(200, 255, 200))
                 elif unit_sales_value > 50:
-                    item_unit_sales.setBackground(QColor(255, 255, 200))  # Amarelo para vendas médias
+                    item_unit_sales.setBackground(QColor(255, 255, 200))
                 
                 self.table.setItem(row_idx, 5, item_unit_sales)
                 
@@ -692,25 +773,22 @@ class ArtigosSemPSDialog(QDialog):
                 item_sugestao = QTableWidgetItem(f"{sugestao:,.0f}")
                 item_sugestao.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 
-                # Colorir sugestões altas
                 if sugestao > 10:
-                    item_sugestao.setBackground(QColor(200, 230, 255))  # Azul claro para sugestões altas
+                    item_sugestao.setBackground(QColor(200, 230, 255))
                 
                 self.table.setItem(row_idx, 8, item_sugestao)
             
-            # Ajustar tamanho das colunas
             header = self.table.horizontalHeader()
-            header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Sku
-            header.setSectionResizeMode(1, QHeaderView.Stretch)          # Description
-            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Sup.Pack Size
-            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # PVP Em Vigor
-            header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # Stock
-            header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # Unit Sales
-            header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # Flow-type
-            header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # Secção
-            header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # Sugestão Presentation Stock
+            header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.Stretch)
+            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(8, QHeaderView.ResizeToContents)
             
-            # Atualizar contador
             self.label_contador.setText(f"Total de artigos sem Presentation Stock: {len(df):,}")
             
         except Exception as e:
@@ -731,7 +809,6 @@ class ArtigosSemPSDialog(QDialog):
             seccao_selecionada = self.combo_seccao.currentText()
             status_selecionado = self.combo_status.currentText()
 
-            # Aplicar os mesmos filtros da visualização atual
             if seccao_selecionada == "Todas as Secções":
                 df_export = self.df_filtered.copy()
             else:
@@ -740,7 +817,6 @@ class ArtigosSemPSDialog(QDialog):
             if 'Status' in df_export.columns and status_selecionado != "Todos os Status":
                 df_export = df_export[df_export['Status'] == status_selecionado]
 
-            # Configuração PDF
             printer = QPrinter(QPrinter.HighResolution)
             printer.setOutputFormat(QPrinter.PdfFormat)
             printer.setOutputFileName(file_path)
@@ -757,7 +833,6 @@ class ArtigosSemPSDialog(QDialog):
             cursor = QTextCursor(doc)
             doc.setDefaultFont(QFont("Arial", 8))
 
-            # Título e info
             title_fmt = QTextCharFormat()
             title_fmt.setFont(QFont("Arial", 16, QFont.Bold))
             block_fmt = QTextBlockFormat()
@@ -771,26 +846,13 @@ class ArtigosSemPSDialog(QDialog):
                 f"Gerado em: {pd.Timestamp.now():%d/%m/%Y %H:%M}\n\n"
             cursor.insertText(info)
 
-            # Cabeçalhos
             headers = [
                 'Sku', 'Description', 'Pack', 'PVP', 'Stock', 
                 'Unit Sales', 'Flow', 'Sec', 'Sug. Presentation Stock'
             ]
 
-            # Larguras ajustadas
-            larguras_percentagem = [
-                10,   # Sku
-                30,   # Description
-                6,    # Pack
-                8,    # PVP
-                8,    # Stock
-                9,    # Unit Sales
-                8,    # Flow
-                6,    # Sec
-                8     # Sug. Presentation Stock
-            ]  # soma = 93% (deixa margem)
+            larguras_percentagem = [10, 30, 6, 8, 8, 9, 8, 6, 8]
 
-            # Formato da tabela
             table_fmt = QTextTableFormat()
             table_fmt.setWidth(QTextLength(QTextLength.PercentageLength, 100))
             table_fmt.setCellPadding(4)
@@ -803,7 +865,6 @@ class ArtigosSemPSDialog(QDialog):
 
             table = cursor.insertTable(len(df_export) + 1, len(headers), table_fmt)
 
-            # Cabeçalho
             header_cell_fmt = QTextTableCellFormat()
             header_cell_fmt.setBackground(QColor("#d0d0d0"))
 
@@ -817,7 +878,6 @@ class ArtigosSemPSDialog(QDialog):
                 cur = cell.firstCursorPosition()
                 cur.insertText(texto, header_char_fmt)
 
-            # Dados
             normal_fmt = QTextCharFormat()
             normal_fmt.setFontPointSize(8)
 
@@ -826,7 +886,6 @@ class ArtigosSemPSDialog(QDialog):
                     cell = table.cellAt(row_idx, col_idx)
                     cur = cell.firstCursorPosition()
 
-                    # Mapear cabeçalhos curtos para colunas reais
                     col_mapping = {
                         'Sku': 'Sku',
                         'Description': 'Description', 
@@ -859,7 +918,6 @@ class ArtigosSemPSDialog(QDialog):
 
                     cur.insertText(text, normal_fmt)
 
-            # Rodapé
             cursor.movePosition(QTextCursor.End)
             cursor.insertBlock()
             footer = QTextCharFormat()
@@ -869,7 +927,6 @@ class ArtigosSemPSDialog(QDialog):
             cursor.setCharFormat(footer)
             cursor.insertText(f"Documento gerado automaticamente • {len(df_export):,} artigos sem Presentation Stock")
 
-            # Exportar
             doc.print_(printer)
 
             QMessageBox.information(
@@ -899,11 +956,9 @@ class ArtigosSemPSDialog(QDialog):
                 self.progress_bar.setVisible(True)
                 self.progress_bar.setValue(50)
                 
-                # Obter dados filtrados atuais
                 seccao_selecionada = self.combo_seccao.currentText()
                 status_selecionado = self.combo_status.currentText()
 
-                # Aplicar os mesmos filtros da visualização atual
                 if seccao_selecionada == "Todas as Secções":
                     df_export = self.df_filtered.copy()
                 else:
@@ -912,24 +967,19 @@ class ArtigosSemPSDialog(QDialog):
                 if 'Status' in df_export.columns and status_selecionado != "Todos os Status":
                     df_export = df_export[df_export['Status'] == status_selecionado]
                 
-                # Colunas para exportação
                 colunas_export = [
                     'Sku', 'Description', 'Sup.Pack Size', 'PVP Em Vigor', 'Stock', 
                     'Unit Sales', 'Flow-type', 'Secção', 'Sugestão Presentation Stock'
                 ]
                 
-                # Filtrar apenas colunas que existem
                 colunas_disponiveis = [col for col in colunas_export if col in df_export.columns]
                 df_export = df_export[colunas_disponiveis].copy()
                 
-                # Exportar para Excel
                 with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
                     df_export.to_excel(writer, index=False, sheet_name='Artigos Sem Presentation Stock')
                     
-                    # Acessar a worksheet para ajustar as colunas
                     worksheet = writer.sheets['Artigos Sem Presentation Stock']
                     
-                    # Ajustar largura das colunas
                     for column in worksheet.columns:
                         max_length = 0
                         column_letter = column[0].column_letter
@@ -966,13 +1016,25 @@ class ArtigosSemPSDialog(QDialog):
         self.label_file.setText("Nenhum ficheiro carregado")
         self.combo_seccao.clear()
         self.combo_seccao.addItem("Todas as Secções")
-        self.combo_status.clear()  # NOVO
-        self.combo_status.addItem("Todos os Status")  # NOVO
-        self.combo_status.setEnabled(True)  # NOVO
+        self.combo_status.clear()
+        self.combo_status.addItem("Todos os Status")
+        self.combo_stock.clear()  # NOVO
+        self.combo_stock.addItem("Todos")  # NOVO
+        self.combo_stock.addItem("Stock > 0")  # NOVO
+        self.combo_stock.addItem("Stock = 0")  # NOVO
+        self.combo_status.setEnabled(True)
         self.label_contador.setText("Total de artigos sem Presentation Stock: 0")
         self.btn_exportar_excel.setEnabled(False)
         self.btn_exportar_pdf.setEnabled(False)
+        self.btn_ml.setEnabled(False)
 
 def mostrar_artigos_sem_ps():
     dialog = ArtigosSemPSDialog()
     dialog.exec_()
+
+if __name__ == "__main__":
+    import sys
+    app = QApplication(sys.argv)
+    dialog = ArtigosSemPSDialog()
+    dialog.show()
+    sys.exit(app.exec_())

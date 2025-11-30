@@ -230,27 +230,40 @@ class HitParadeDialog(QDialog):
         self.setLayout(layout)
 
     def calcular_percentual_vendas(self):
-        """Calcula a percentagem de vendas (Stock em relação a Unit Sales)"""
+        """Calcula a percentagem de vendas (Stock Total em relação a Unit Sales)"""
         try:
             # Inicializar a coluna %Vendas
             self.df['%Vendas'] = 0
             
-            # %Vendas = (Stock / Unit Sales) * 100
+            # Calcular Stock Total como soma de todas as colunas de stock
+            # Inicializar com Stock (que é obrigatório existir)
+            self.df['Stock Total'] = self.df['Stock'].fillna(0)
+            
+            # Adicionar outras colunas de stock se existirem
+            stock_columns = ['Stock In Transit', 'Stock Expected', 'Stock On Order']
+            for col in stock_columns:
+                if col in self.df.columns:
+                    self.df['Stock Total'] += self.df[col].fillna(0)
+            
+            # %Vendas = (Stock Total / Unit Sales) * 100
             # Proteger contra divisão por zero
-            mask = (self.df['Unit Sales'] > 0) & (self.df['Stock'].notna())
+            mask = (self.df['Unit Sales'] > 0) & (self.df['Stock Total'].notna())
             
             # Calcular %Vendas apenas onde Unit Sales > 0
-            self.df.loc[mask, '%Vendas'] = (self.df.loc[mask, 'Stock'] / self.df.loc[mask, 'Unit Sales']) * 100
+            self.df.loc[mask, '%Vendas'] = (self.df.loc[mask, 'Stock Total'] / self.df.loc[mask, 'Unit Sales']) * 100
             
             # Para casos onde Unit Sales é 0, definir %Vendas como um valor muito alto (99999)
             # para que apareçam no final quando ordenado de forma crescente
             self.df.loc[self.df['Unit Sales'] == 0, '%Vendas'] = 99999
             
-            # Para casos onde Stock é 0 mas Unit Sales > 0, %Vendas = 0
-            self.df.loc[(self.df['Stock'] == 0) & (self.df['Unit Sales'] > 0), '%Vendas'] = 0
+            # Para casos onde Stock Total é 0 mas Unit Sales > 0, %Vendas = 0
+            self.df.loc[(self.df['Stock Total'] == 0) & (self.df['Unit Sales'] > 0), '%Vendas'] = 0
             
             # Arredondar para 2 casas decimais
             self.df['%Vendas'] = self.df['%Vendas'].round(2)
+            
+            print(f"Colunas de stock encontradas: {[col for col in ['Stock', 'Stock In Transit', 'Stock Expected', 'Stock On Order'] if col in self.df.columns]}")
+            print(f"Stock Total calculado - Mín: {self.df['Stock Total'].min()}, Máx: {self.df['Stock Total'].max()}, Média: {self.df['Stock Total'].mean():.2f}")
             
         except Exception as e:
             print(f"Erro ao calcular %Vendas: {e}")
