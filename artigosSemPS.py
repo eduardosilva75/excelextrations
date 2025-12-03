@@ -3,12 +3,15 @@ import pandas as pd
 import numpy as np
 
 # IMPORTS PARA ML
-from sklearn.ensemble import AdaBoostRegressor, RandomForestRegressor
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, AdaBoostRegressor
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import cross_val_score
 from sklearn.metrics import mean_absolute_error, r2_score
+
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
 
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -336,50 +339,81 @@ class ArtigosSemPSDialog(QDialog):
             
             df_ml = self.df.copy()
             
-            features = [
-                'Unit Sales', 'Sales Value', 'PVP Em Vigor', 'Sup.Pack Size', 
-                'Stock', 'Secção', 'Flow-type'
+            # Features numéricas especificadas
+            numeric_features = [
+                'Sup.Code', 'Sup.Pack Size', 'PVP Permanente', 'Stock', 
+                'Stock In Transit', 'Stock Expected', 'Last Order Point', 
+                'Lead Time WH to Location', 'Unit Sales', 'Sales Value'
             ]
             
-            features = [f for f in features if f in df_ml.columns]
+            # Features categóricas especificadas
+            categorical_features = ['Flow-type', 'Dta activacao', 'GLP']
             
+            # Verifica quais features existem no DataFrame
+            available_numeric = [f for f in numeric_features if f in df_ml.columns]
+            available_categorical = [f for f in categorical_features if f in df_ml.columns]
+            
+            all_features = available_numeric + available_categorical
+            
+            if len(all_features) < 3:
+                QMessageBox.warning(self, "Aviso", 
+                    f"Poucas features disponíveis ({len(all_features)}). Mínimo recomendado: 3")
+                return
+            
+            # Filtra dados para treino (artigos com PS > 0)
             df_treino = df_ml[df_ml['Presentation Stock'] > 0].copy()
             
             if len(df_treino) < 10:
-                QMessageBox.warning(self, "Aviso", "Poucos artigos com PS > 0 para treinar modelo.")
+                QMessageBox.warning(self, "Aviso", 
+                    "Poucos artigos com PS > 0 para treinar modelo (mínimo: 10).")
                 self.calcular_sugestao_ps_regras()
                 return
-
+            
+            # Filtra dados para previsão (artigos com PS = 0)
             df_prever = df_ml[df_ml['Presentation Stock'] == 0].copy()
             
             if df_prever.empty:
                 QMessageBox.information(self, "Info", "Todos os artigos já têm PS definido.")
                 return
-
+            
             self.progress_bar.setValue(30)
             
-            X_train, y_train, X_pred, preprocessor = self.preparar_dados_ml(df_treino, df_prever, features)
+            # Prepara dados
+            X_train, y_train, X_pred, preprocessor, feature_names = self.preparar_dados_ml(
+                df_treino, df_prever, available_numeric, available_categorical
+            )
             
             self.progress_bar.setValue(60)
             
-            modelo, mae_score = self.treinar_modelo_ml(X_train, y_train)
+            # Treina modelo
+            modelo, mae_score, nome_modelo = self.treinar_modelo_ml(X_train, y_train)
             
             self.progress_bar.setValue(80)
             
+            # Faz previsões
             previsoes = modelo.predict(X_pred)
             
+            # Aplica previsões com constraints
             df_prever['Sugestão Presentation Stock'] = np.round(previsoes).astype(int)
-            df_prever['Sugestão Presentation Stock'] = df_prever['Sugestão Presentation Stock'].clip(lower=1, upper=200)
+            df_prever['Sugestão Presentation Stock'] = df_prever['Sugestão Presentation Stock'].clip(
+                lower=1, upper=200
+            )
             
-            df_prever = self.aplicar_logica_pack_size(df_prever)
+            # Aplica lógica de pack size (se existir)
+            if hasattr(self, 'aplicar_logica_pack_size'):
+                df_prever = self.aplicar_logica_pack_size(df_prever)
             
+            # Atualiza DataFrame principal
             self.df.loc[df_prever.index, 'Sugestão Presentation Stock'] = df_prever['Sugestão Presentation Stock']
             self.df.loc[self.df['Presentation Stock'] > 0, 'Sugestão Presentation Stock'] = 0
             
             self.progress_bar.setValue(100)
             
-            self.mostrar_metricas_ml(modelo, X_train, y_train, df_prever, mae_score)
+            # Mostra métricas
+            self.mostrar_metricas_ml(modelo, X_train, y_train, df_prever, mae_score, 
+                                    nome_modelo, feature_names)
             
+            # Atualiza visualização
             self.df_filtered = self.df[self.df['Presentation Stock'] == 0].copy()
             self.aplicar_filtros()
             
@@ -387,34 +421,97 @@ class ArtigosSemPSDialog(QDialog):
             QMessageBox.critical(self, "Erro", f"Erro no ML: {str(e)}")
             import traceback
             print(traceback.format_exc())
-            self.calcular_sugestao_ps_regras()
+            if hasattr(self, 'calcular_sugestao_ps_regras'):
+                self.calcular_sugestao_ps_regras()
         finally:
             self.progress_bar.setVisible(False)
 
-    def preparar_dados_ml(self, df_treino, df_prever, features):
-        """Prepara dados para Machine Learning"""
-        X_train = df_treino[features].copy()
+
+    def preparar_dados_ml(self, df_treino, df_prever, numeric_features, categorical_features):
+        """Prepara dados para Machine Learning com tratamento de valores ausentes"""
+        
+        all_features = numeric_features + categorical_features
+        
+        # Cria cópias dos dados
+        X_train = df_treino[all_features].copy()
         y_train = df_treino['Presentation Stock'].values
-        X_pred = df_prever[features].copy()
+        X_pred = df_prever[all_features].copy()
         
-        numeric_features = X_train.select_dtypes(include=[np.number]).columns.tolist()
-        categorical_features = X_train.select_dtypes(include=['object']).columns.tolist()
+        # Pipeline para features numéricas (imputer + scaler)
+        numeric_transformer = Pipeline(steps=[
+            ('imputer', SimpleImputer(strategy='median')),
+            ('scaler', StandardScaler())
+        ])
         
+        # Pipeline para features categóricas (imputer + encoder)
+        categorical_transformer = Pipeline(steps=[
+            ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
+            ('encoder', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+        ])
+        
+        # Combina transformers
         preprocessor = ColumnTransformer(
             transformers=[
-                ('num', StandardScaler(), numeric_features),
-                ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)
-            ])
+                ('num', numeric_transformer, numeric_features),
+                ('cat', categorical_transformer, categorical_features)
+            ],
+            remainder='drop'
+        )
         
+        # Transforma dados
         X_train_processed = preprocessor.fit_transform(X_train)
         X_pred_processed = preprocessor.transform(X_pred)
         
-        return X_train_processed, y_train, X_pred_processed, preprocessor
+        # Gera nomes de features para análise posterior
+        feature_names = self._get_feature_names(preprocessor, numeric_features, categorical_features)
+        
+        print(f"Features utilizadas: {len(all_features)}")
+        print(f"- Numéricas: {len(numeric_features)}")
+        print(f"- Categóricas: {len(categorical_features)}")
+        print(f"Amostras treino: {len(X_train_processed)}, Amostras previsão: {len(X_pred_processed)}")
+        
+        return X_train_processed, y_train, X_pred_processed, preprocessor, feature_names
+
+
+    def _get_feature_names(self, preprocessor, numeric_features, categorical_features):
+        """Obtém nomes das features após transformação"""
+        try:
+            feature_names = []
+            
+            # Features numéricas mantêm o nome
+            feature_names.extend(numeric_features)
+            
+            # Features categóricas são expandidas pelo OneHotEncoder
+            if categorical_features:
+                cat_encoder = preprocessor.named_transformers_['cat'].named_steps['encoder']
+                for i, cat_feature in enumerate(categorical_features):
+                    categories = cat_encoder.categories_[i]
+                    feature_names.extend([f"{cat_feature}_{cat}" for cat in categories])
+            
+            return feature_names
+        except:
+            return [f"feature_{i}" for i in range(len(numeric_features) + len(categorical_features))]
+
 
     def treinar_modelo_ml(self, X_train, y_train):
-        """Treina modelo com validação"""
+        """Treina modelo com validação cruzada e seleção do melhor"""
+        
         modelos = {
-            'RandomForest': RandomForestRegressor(n_estimators=100, random_state=42, max_depth=10),
+            'RandomForest': RandomForestRegressor(
+                n_estimators=100, 
+                max_depth=10,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                random_state=42,
+                n_jobs=-1
+            ),
+            'GradientBoosting': GradientBoostingRegressor(
+                n_estimators=100,
+                max_depth=6,
+                learning_rate=0.1,
+                subsample=0.8,
+                random_state=42
+            ),
             'AdaBoost': AdaBoostRegressor(
                 estimator=DecisionTreeRegressor(max_depth=6, min_samples_split=15),
                 n_estimators=100,
@@ -427,65 +524,79 @@ class ArtigosSemPSDialog(QDialog):
         melhor_score = float('inf')
         melhor_nome = ''
         
+        print("\n=== Avaliação dos Modelos ===")
+        
         for nome, modelo in modelos.items():
             try:
-                scores = cross_val_score(modelo, X_train, y_train, cv=min(5, len(X_train)), 
-                                       scoring='neg_mean_absolute_error')
+                # Validação cruzada
+                cv_folds = min(5, len(X_train) // 2)  # Ajusta número de folds
+                
+                scores = cross_val_score(
+                    modelo, X_train, y_train, 
+                    cv=cv_folds, 
+                    scoring='neg_mean_absolute_error',
+                    n_jobs=-1
+                )
+                
                 mae_score = -scores.mean()
+                mae_std = scores.std()
+                
+                print(f"{nome}: MAE = {mae_score:.2f} (±{mae_std:.2f})")
                 
                 if mae_score < melhor_score:
                     melhor_score = mae_score
                     melhor_modelo = modelo
                     melhor_nome = nome
-            except:
+                    
+            except Exception as e:
+                print(f"Erro ao treinar {nome}: {str(e)}")
                 continue
         
+        # Treina o melhor modelo com todos os dados
         if melhor_modelo is not None:
             melhor_modelo.fit(X_train, y_train)
-            print(f"Melhor modelo: {melhor_nome} com MAE: {melhor_score:.2f}")
-            return melhor_modelo, melhor_score
+            print(f"\n✓ Melhor modelo selecionado: {melhor_nome} (MAE: {melhor_score:.2f})")
+            return melhor_modelo, melhor_score, melhor_nome
         else:
+            # Fallback para modelo simples
+            print("\n⚠ Usando modelo fallback (RandomForest simplificado)")
             modelo = RandomForestRegressor(n_estimators=50, random_state=42)
             modelo.fit(X_train, y_train)
-            return modelo, 0
+            return modelo, 0, "RandomForest (Fallback)"
 
-    def aplicar_logica_pack_size(self, df_prever):
-        """Aplica lógica de pack size às previsões do ML"""
-        for idx, row in df_prever.iterrows():
-            sugestao = row['Sugestão Presentation Stock']
-            pack_size = row.get('Sup.Pack Size', 1)
-            
-            if pack_size > 1 and pack_size <= 12:
-                packs = max(1, round(sugestao / pack_size))
-                df_prever.at[idx, 'Sugestão Presentation Stock'] = packs * pack_size
-            elif pack_size > 12:
-                df_prever.at[idx, 'Sugestão Presentation Stock'] = max(3, sugestao)
-        
-        return df_prever
 
-    def mostrar_metricas_ml(self, modelo, X_train, y_train, df_prever, mae_score):
-        """Mostra métricas do modelo"""
-        y_pred_train = modelo.predict(X_train)
+    def mostrar_metricas_ml(self, modelo, X_train, y_train, df_prever, mae_score, 
+                            nome_modelo, feature_names):
+        """Mostra métricas do modelo treinado"""
         
-        mae = mean_absolute_error(y_train, y_pred_train)
-        r2 = r2_score(y_train, y_pred_train)
+        msg = f"=== Resultados do Machine Learning ===\n\n"
+        msg += f"Modelo utilizado: {nome_modelo}\n"
+        msg += f"MAE (Validação Cruzada): {mae_score:.2f}\n\n"
         
+        msg += f"Dados de treino: {len(X_train)} artigos\n"
+        msg += f"Previsões geradas: {len(df_prever)} artigos\n\n"
+        
+        # Estatísticas das previsões
         sugestoes = df_prever['Sugestão Presentation Stock']
+        msg += f"Sugestões geradas:\n"
+        msg += f"  - Mínimo: {sugestoes.min()}\n"
+        msg += f"  - Média: {sugestoes.mean():.1f}\n"
+        msg += f"  - Mediana: {sugestoes.median():.1f}\n"
+        msg += f"  - Máximo: {sugestoes.max()}\n\n"
         
-        QMessageBox.information(
-            self,
-            "ML Concluído ✅",
-            f"Modelo {modelo.__class__.__name__} treinado com sucesso!\n\n"
-            f"📊 Métricas do modelo:\n"
-            f"• MAE (validação): {mae_score:.1f} unidades\n"
-            f"• MAE (treino): {mae:.1f} unidades\n"
-            f"• R²: {r2:.2f}\n\n"
-            f"📦 Sugestões geradas:\n"
-            f"• Artigos: {len(df_prever)}\n"
-            f"• Média: {sugestoes.mean():.1f} unid.\n"
-            f"• Mediana: {sugestoes.median():.1f} unid.\n"
-            f"• Range: {sugestoes.min()} - {sugestoes.max()} unid."
-        )
+        # Feature importance (se disponível)
+        if hasattr(modelo, 'feature_importances_'):
+            importances = modelo.feature_importances_
+            top_n = min(5, len(importances))
+            top_indices = np.argsort(importances)[-top_n:][::-1]
+            
+            msg += "Top 5 Features mais importantes:\n"
+            for idx in top_indices:
+                if idx < len(feature_names):
+                    msg += f"  - {feature_names[idx]}: {importances[idx]:.3f}\n"
+        
+        QMessageBox.information(self, "Métricas ML", msg)
+        print(msg)
 
     def calcular_sugestao_ps_regras(self):
         """Método baseado em regras (fallback) - VERSÃO SIMPLIFICADA"""
