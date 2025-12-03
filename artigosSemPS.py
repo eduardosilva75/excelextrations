@@ -40,6 +40,7 @@ from PyQt5.QtCore import Qt, QMarginsF
 from PyQt5.QtGui import QTextFrameFormat
 
 import multiprocessing
+import sys
 
 class ArtigosSemPSDialog(QDialog):
     def __init__(self):
