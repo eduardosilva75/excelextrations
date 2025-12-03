@@ -1,6 +1,8 @@
 import os
 import pandas as pd
 import numpy as np
+import tempfile
+from datetime import datetime
 
 # IMPORTS PARA ML
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, AdaBoostRegressor
@@ -9,7 +11,6 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import cross_val_score
 from sklearn.metrics import mean_absolute_error, r2_score
-
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 
@@ -17,30 +18,20 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFileDialog, QMessageBox, QProgressBar, QTableWidget,
     QTableWidgetItem, QHeaderView, QComboBox, QLineEdit,
-    QCheckBox, QMainWindow, QWidget, QApplication
+    QCheckBox, QMainWindow, QWidget, QApplication, QSplitter,
+    QTextEdit, QScrollArea
 )
 
-from PyQt5.QtPrintSupport import QPrinter
+from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
 
 from PyQt5.QtGui import (
-    QFont,
-    QColor,
-    QTextDocument,
-    QTextCursor,
-    QTextTableFormat,
-    QTextTableCellFormat,
-    QTextCharFormat,
-    QTextBlockFormat,
-    QTextLength,
-    QPageSize,
-    QPageLayout
+    QFont, QColor, QTextDocument, QTextCursor, QTextTableFormat,
+    QTextTableCellFormat, QTextCharFormat, QTextBlockFormat,
+    QTextLength, QPageSize, QPageLayout, QPainter, QDesktopServices
 )
 
-from PyQt5.QtCore import Qt, QMarginsF
+from PyQt5.QtCore import Qt, QMarginsF, QUrl, QTimer
 from PyQt5.QtGui import QTextFrameFormat
-
-import multiprocessing
-import sys
 
 class ArtigosSemPSDialog(QDialog):
     def __init__(self):
@@ -51,6 +42,10 @@ class ArtigosSemPSDialog(QDialog):
         self.df_filtered = None
         self.df_com_ps = None
         self.initUI()
+        
+        # Para gerenciar múltiplas páginas no PDF
+        self.current_pdf_page = 0
+        self.pdf_pages_data = []
 
     def initUI(self):
         layout = QVBoxLayout()
@@ -107,7 +102,7 @@ class ArtigosSemPSDialog(QDialog):
         self.combo_status.currentTextChanged.connect(self.aplicar_filtros)
         filters_layout.addWidget(self.combo_status)
 
-        # NOVO: Filtro para Stock
+        # Filtro para Stock
         filters_layout.addWidget(QLabel("Stock:"))
 
         self.combo_stock = QComboBox()
@@ -117,6 +112,14 @@ class ArtigosSemPSDialog(QDialog):
         self.combo_stock.addItem("Stock = 0")
         self.combo_stock.currentTextChanged.connect(self.aplicar_filtros)
         filters_layout.addWidget(self.combo_stock)
+
+        # NOVO: Filtro de busca rápida
+        filters_layout.addWidget(QLabel("Buscar:"))
+        self.search_input = QLineEdit()
+        self.search_input.setMinimumWidth(150)
+        self.search_input.setPlaceholderText("SKU ou Descrição...")
+        self.search_input.textChanged.connect(self.aplicar_filtros)
+        filters_layout.addWidget(self.search_input)
 
         filters_layout.addStretch()
 
@@ -131,13 +134,19 @@ class ArtigosSemPSDialog(QDialog):
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
         
-        # Tabela
+        # Tabela dentro de um scroll area
+        self.table_scroll = QScrollArea()
+        self.table_scroll.setWidgetResizable(True)
+        self.table_widget = QWidget()
+        self.table_layout = QVBoxLayout(self.table_widget)
+        
         self.table = QTableWidget()
         self.table.setAlternatingRowColors(True)
         self.table.setStyleSheet("""
             QTableWidget {
                 gridline-color: #d0d0d0;
                 background-color: white;
+                border: 1px solid #d0d0d0;
             }
             QTableWidget::item {
                 padding: 5px;
@@ -148,8 +157,14 @@ class ArtigosSemPSDialog(QDialog):
                 border: 1px solid #d0d0d0;
                 font-weight: bold;
             }
+            QTableWidget::item:selected {
+                background-color: #4CAF50;
+                color: white;
+            }
         """)
-        layout.addWidget(self.table)
+        self.table_layout.addWidget(self.table)
+        self.table_scroll.setWidget(self.table_widget)
+        layout.addWidget(self.table_scroll)
         
         # Botões de ação
         buttons_layout = QHBoxLayout()
@@ -220,7 +235,7 @@ class ArtigosSemPSDialog(QDialog):
                 color: #666666;
             }
         """)
-        self.btn_exportar_pdf.clicked.connect(self.exportar_pdf)
+        self.btn_exportar_pdf.clicked.connect(self.exportar_pdf_fixed)
         self.btn_exportar_pdf.setEnabled(False)
         buttons_layout.addWidget(self.btn_exportar_pdf)
 
@@ -265,6 +280,10 @@ class ArtigosSemPSDialog(QDialog):
         layout.addLayout(buttons_layout)
         
         self.setLayout(layout)
+        
+        # Timer para processamento assíncrono
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.processar_em_lote)
 
     def aplicar_filtros(self):
         if self.df_filtered is None:
@@ -273,7 +292,8 @@ class ArtigosSemPSDialog(QDialog):
         try:
             seccao_selecionada = self.combo_seccao.currentText()
             status_selecionado = self.combo_status.currentText()
-            stock_selecionado = self.combo_stock.currentText()  # NOVO
+            stock_selecionado = self.combo_stock.currentText()
+            search_text = self.search_input.text().lower()
             
             # Aplicar filtro por secção
             if seccao_selecionada == "Todas as Secções":
@@ -285,12 +305,19 @@ class ArtigosSemPSDialog(QDialog):
             if 'Status' in df_temp.columns and status_selecionado != "Todos os Status":
                 df_temp = df_temp[df_temp['Status'] == status_selecionado]
             
-            # NOVO: Aplicar filtro por stock
+            # Aplicar filtro por stock
             if stock_selecionado == "Stock > 0":
                 df_temp = df_temp[df_temp['Stock'] > 0]
             elif stock_selecionado == "Stock = 0":
                 df_temp = df_temp[df_temp['Stock'] == 0]
-            # "Todos" não aplica filtro
+            
+            # Aplicar filtro de busca
+            if search_text:
+                mask = (
+                    df_temp['Sku'].astype(str).str.lower().str.contains(search_text) |
+                    df_temp['Description'].astype(str).str.lower().str.contains(search_text)
+                )
+                df_temp = df_temp[mask]
             
             self.atualizar_tabela(df_temp)
             
@@ -342,14 +369,14 @@ class ArtigosSemPSDialog(QDialog):
             
             df_ml = self.df.copy()
             
-            # Features numéricas especificadas
+            # Features numéricas
             numeric_features = [
                 'Sup.Code', 'Sup.Pack Size', 'PVP Permanente', 'Stock', 
                 'Stock In Transit', 'Stock Expected', 'Last Order Point', 
                 'Lead Time WH to Location', 'Unit Sales', 'Sales Value'
             ]
             
-            # Features categóricas especificadas
+            # Features categóricas
             categorical_features = ['Flow-type', 'Dta activacao', 'GLP']
             
             # Verifica quais features existem no DataFrame
@@ -402,10 +429,6 @@ class ArtigosSemPSDialog(QDialog):
                 lower=1, upper=200
             )
             
-            # Aplica lógica de pack size (se existir)
-            if hasattr(self, 'aplicar_logica_pack_size'):
-                df_prever = self.aplicar_logica_pack_size(df_prever)
-            
             # Atualiza DataFrame principal
             self.df.loc[df_prever.index, 'Sugestão Presentation Stock'] = df_prever['Sugestão Presentation Stock']
             self.df.loc[self.df['Presentation Stock'] > 0, 'Sugestão Presentation Stock'] = 0
@@ -424,11 +447,9 @@ class ArtigosSemPSDialog(QDialog):
             QMessageBox.critical(self, "Erro", f"Erro no ML: {str(e)}")
             import traceback
             print(traceback.format_exc())
-            if hasattr(self, 'calcular_sugestao_ps_regras'):
-                self.calcular_sugestao_ps_regras()
+            self.calcular_sugestao_ps_regras()
         finally:
             self.progress_bar.setVisible(False)
-
 
     def preparar_dados_ml(self, df_treino, df_prever, numeric_features, categorical_features):
         """Prepara dados para Machine Learning com tratamento de valores ausentes"""
@@ -440,13 +461,13 @@ class ArtigosSemPSDialog(QDialog):
         y_train = df_treino['Presentation Stock'].values
         X_pred = df_prever[all_features].copy()
         
-        # Pipeline para features numéricas (imputer + scaler)
+        # Pipeline para features numéricas
         numeric_transformer = Pipeline(steps=[
             ('imputer', SimpleImputer(strategy='median')),
             ('scaler', StandardScaler())
         ])
         
-        # Pipeline para features categóricas (imputer + encoder)
+        # Pipeline para features categóricas
         categorical_transformer = Pipeline(steps=[
             ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
             ('encoder', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
@@ -475,7 +496,6 @@ class ArtigosSemPSDialog(QDialog):
         
         return X_train_processed, y_train, X_pred_processed, preprocessor, feature_names
 
-
     def _get_feature_names(self, preprocessor, numeric_features, categorical_features):
         """Obtém nomes das features após transformação"""
         try:
@@ -495,12 +515,8 @@ class ArtigosSemPSDialog(QDialog):
         except:
             return [f"feature_{i}" for i in range(len(numeric_features) + len(categorical_features))]
 
-
     def treinar_modelo_ml(self, X_train, y_train):
         """Treina modelo com validação cruzada e seleção do melhor"""
-
-        if sys.platform.startswith('win'):
-            multiprocessing.set_start_method('spawn', force=True)
         
         modelos = {
             'RandomForest': RandomForestRegressor(
@@ -570,7 +586,6 @@ class ArtigosSemPSDialog(QDialog):
             modelo.fit(X_train, y_train)
             return modelo, 0, "RandomForest (Fallback)"
 
-
     def mostrar_metricas_ml(self, modelo, X_train, y_train, df_prever, mae_score, 
                             nome_modelo, feature_names):
         """Mostra métricas do modelo treinado"""
@@ -605,7 +620,7 @@ class ArtigosSemPSDialog(QDialog):
         print(msg)
 
     def calcular_sugestao_ps_regras(self):
-        """Método baseado em regras (fallback) - VERSÃO SIMPLIFICADA"""
+        """Método baseado em regras (fallback)"""
         try:
             if 'Presentation Stock' not in self.df.columns:
                 return
@@ -691,227 +706,174 @@ class ArtigosSemPSDialog(QDialog):
                 self.progress_bar.setVisible(True)
                 self.progress_bar.setValue(0)
                 
-                file_extension = file_path.lower().split('.')[-1]
-                
-                if file_extension in ['xlsx', 'xls']:
-                    self.df = pd.read_excel(file_path)
-                elif file_extension == 'csv':
-                    self.df = self.carregar_csv(file_path)
-                else:
-                    QMessageBox.critical(self, "Erro", "Formato de ficheiro não suportado.")
-                    self.progress_bar.setVisible(False)
-                    return
-                
-                self.progress_bar.setValue(50)
-                
-                colunas_necessarias = ['Sku', 'Description', 'Unit Sales', 'Stock', 'Merc.Struct Code', 'Presentation Stock']
-                colunas_faltantes = [col for col in colunas_necessarias if col not in self.df.columns]
-                
-                if colunas_faltantes:
-                    QMessageBox.critical(
-                        self, 
-                        "Erro", 
-                        f"Colunas faltantes no ficheiro: {', '.join(colunas_faltantes)}\n\nColunas encontradas: {', '.join(self.df.columns)}"
-                    )
-                    self.progress_bar.setVisible(False)
-                    return
-                
-                self.df['Secção'] = self.df['Merc.Struct Code'].astype(str).str[2:4]
-                self.df['Sugestão Presentation Stock'] = 0
-                
-                self.calcular_sugestao_ps()
-                
-                self.df_filtered = self.df[self.df['Presentation Stock'] == 0].copy()
-                self.df_filtered = self.df_filtered.sort_values(['Secção', 'Unit Sales'], ascending=[True, False])
-                
-                seccoes = sorted(self.df_filtered['Secção'].unique())
-                self.combo_seccao.clear()
-                self.combo_seccao.addItem("Todas as Secções")
-                self.combo_seccao.addItems([str(sec) for sec in seccoes])
-                
-                if 'Status' in self.df_filtered.columns:
-                    status_unicos = sorted(self.df_filtered['Status'].dropna().unique())
-                    self.combo_status.clear()
-                    self.combo_status.addItem("Todos os Status")
-                    self.combo_status.addItems([str(status) for status in status_unicos])
-                else:
-                    self.combo_status.clear()
-                    self.combo_status.addItem("Todos os Status")
-                    self.combo_status.setEnabled(False)
-                
-                self.progress_bar.setValue(100)
-                
-                self.label_file.setText(os.path.basename(file_path))
-                self.btn_exportar_excel.setEnabled(True)
-                self.btn_exportar_pdf.setEnabled(True)
-                self.btn_ml.setEnabled(True)
-                self.aplicar_filtros()
-                
-                QMessageBox.information(
-                    self, 
-                    "Sucesso", 
-                    f"Ficheiro carregado com sucesso!\n"
-                    f"{len(self.df_filtered)} artigos sem Presentation Stock encontrados."
-                )
+                # Processamento assíncrono
+                QTimer.singleShot(100, lambda: self.processar_ficheiro_async(file_path))
                 
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao carregar ficheiro: {str(e)}")
+            self.progress_bar.setVisible(False)
+
+    def processar_ficheiro_async(self, file_path):
+        try:
+            file_extension = file_path.lower().split('.')[-1]
+            
+            if file_extension in ['xlsx', 'xls']:
+                self.df = pd.read_excel(file_path)
+            elif file_extension == 'csv':
+                self.df = self.carregar_csv(file_path)
+            else:
+                QMessageBox.critical(self, "Erro", "Formato de ficheiro não suportado.")
+                self.progress_bar.setVisible(False)
+                return
+            
+            self.progress_bar.setValue(50)
+            
+            colunas_necessarias = ['Sku', 'Description', 'Unit Sales', 'Stock', 'Merc.Struct Code', 'Presentation Stock']
+            colunas_faltantes = [col for col in colunas_necessarias if col not in self.df.columns]
+            
+            if colunas_faltantes:
+                QMessageBox.critical(
+                    self, 
+                    "Erro", 
+                    f"Colunas faltantes no ficheiro: {', '.join(colunas_faltantes)}\n\nColunas encontradas: {', '.join(self.df.columns)}"
+                )
+                self.progress_bar.setVisible(False)
+                return
+            
+            self.df['Secção'] = self.df['Merc.Struct Code'].astype(str).str[2:4]
+            self.df['Sugestão Presentation Stock'] = 0
+            
+            # Calcular sugestões
+            self.calcular_sugestao_ps()
+            
+            self.df_filtered = self.df[self.df['Presentation Stock'] == 0].copy()
+            self.df_filtered = self.df_filtered.sort_values(['Secção', 'Unit Sales'], ascending=[True, False])
+            
+            seccoes = sorted(self.df_filtered['Secção'].unique())
+            self.combo_seccao.clear()
+            self.combo_seccao.addItem("Todas as Secções")
+            self.combo_seccao.addItems([str(sec) for sec in seccoes])
+            
+            if 'Status' in self.df_filtered.columns:
+                status_unicos = sorted(self.df_filtered['Status'].dropna().unique())
+                self.combo_status.clear()
+                self.combo_status.addItem("Todos os Status")
+                self.combo_status.addItems([str(status) for status in status_unicos])
+                self.combo_status.setEnabled(True)
+            else:
+                self.combo_status.clear()
+                self.combo_status.addItem("Todos os Status")
+                self.combo_status.setEnabled(False)
+            
+            self.progress_bar.setValue(100)
+            
+            self.label_file.setText(os.path.basename(file_path))
+            self.btn_exportar_excel.setEnabled(True)
+            self.btn_exportar_pdf.setEnabled(True)
+            self.btn_ml.setEnabled(True)
+            self.aplicar_filtros()
+            
+            QMessageBox.information(
+                self, 
+                "Sucesso", 
+                f"Ficheiro carregado com sucesso!\n"
+                f"{len(self.df_filtered)} artigos sem Presentation Stock encontrados."
+            )
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Erro", f"Erro ao processar ficheiro: {str(e)}")
         finally:
             self.progress_bar.setVisible(False)
 
-    def carregar_csv(self, file_path):
-        """Carrega ficheiro CSV com deteção automática de delimitador e encoding"""
-        encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
-        
-        for encoding in encodings:
-            try:
-                with open(file_path, 'r', encoding=encoding) as f:
-                    first_lines = [f.readline() for _ in range(5)]
-                
-                delimiters = [',', ';', '\t', '|']
-                delimiter_scores = {}
-                
-                for delimiter in delimiters:
-                    score = 0
-                    for line in first_lines:
-                        if line:
-                            score += line.count(delimiter)
-                    delimiter_scores[delimiter] = score
-                
-                best_delimiter = max(delimiter_scores, key=delimiter_scores.get)
-                
-                if delimiter_scores[best_delimiter] == 0:
-                    best_delimiter = ','
-                
-                df = pd.read_csv(file_path, delimiter=best_delimiter, encoding=encoding)
-                df.columns = df.columns.str.strip()
-                
-                print(f"CSV carregado com encoding: {encoding}, delimitador: '{best_delimiter}'")
-                return df
-                
-            except UnicodeDecodeError:
-                continue
-            except Exception as e:
-                print(f"Tentativa com encoding {encoding} falhou: {e}")
-                continue
-        
-        return self.carregar_csv_manual(file_path)
-
-    def carregar_csv_manual(self, file_path):
-        """Fallback para carregamento manual de CSV"""
-        QMessageBox.warning(
-            self, 
-            "Deteção Automática Falhou", 
-            "Não foi possível detetar automaticamente o formato do CSV.\n"
-            "Por favor, selecione manualmente o delimitador e encoding."
-        )
-        
-        try:
-            df = pd.read_csv(file_path, delimiter=',', encoding='latin-1')
-            df.columns = df.columns.str.strip()
-            return df
-        except:
-            try:
-                df = pd.read_csv(file_path, delimiter=';', encoding='latin-1')
-                df.columns = df.columns.str.strip()
-                return df
-            except Exception as e:
-                raise Exception(f"Não foi possível ler o ficheiro CSV: {str(e)}")
-
     def atualizar_tabela(self, df):
         try:
-            self.table.setRowCount(len(df))
-            self.table.setColumnCount(9)
-            self.table.setHorizontalHeaderLabels([
+            if df is None or df.empty:
+                self.table.setRowCount(0)
+                self.label_contador.setText("Total de artigos sem Presentation Stock: 0")
+                return
+            
+            # Limitar número de linhas para performance
+            max_rows = 1000
+            if len(df) > max_rows:
+                QMessageBox.warning(self, "Muitos Resultados", 
+                                  f"Mostrando apenas os primeiros {max_rows} resultados de {len(df)}.\nUse filtros para refinar a busca.")
+                df_display = df.head(max_rows)
+            else:
+                df_display = df.copy()
+            
+            self.table.setRowCount(len(df_display))
+            
+            # Definir colunas baseadas nos dados disponíveis
+            colunas_disponiveis = []
+            colunas_possiveis = [
                 'Sku', 'Description', 'Sup.Pack Size', 'PVP Em Vigor', 'Stock', 
                 'Unit Sales', 'Flow-type', 'Secção', 'Sugestão Presentation Stock'
-            ])
+            ]
             
-            for row_idx, (_, row) in enumerate(df.iterrows()):
-                # Sku
-                item_sku = QTableWidgetItem(str(row['Sku']))
-                item_sku.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 0, item_sku)
-                
-                # Description
-                item_desc = QTableWidgetItem(str(row['Description']))
-                item_desc.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 1, item_desc)
-                
-                # Sup.Pack Size
-                pack_size = row.get('Sup.Pack Size', 0) if pd.notna(row.get('Sup.Pack Size')) else 0
-                item_pack = QTableWidgetItem(f"{pack_size:,.0f}")
-                item_pack.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 2, item_pack)
-                
-                # PVP Em Vigor
-                pvp = row.get('PVP Em Vigor', 0) if pd.notna(row.get('PVP Em Vigor')) else 0
-                item_pvp = QTableWidgetItem(f"€ {pvp:,.2f}")
-                item_pvp.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 3, item_pvp)
-                
-                # Stock
-                stock_value = row['Stock'] if pd.notna(row['Stock']) else 0
-                item_stock = QTableWidgetItem(f"{stock_value:,.0f}")
-                item_stock.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                
-                if stock_value == 0:
-                    item_stock.setBackground(QColor(255, 200, 200))
-                elif stock_value < (row.get('Sugestão Presentation Stock', 0) or 0):
-                    item_stock.setBackground(QColor(255, 255, 200))
-                
-                self.table.setItem(row_idx, 4, item_stock)
-                
-                # Unit Sales
-                unit_sales_value = row['Unit Sales'] if pd.notna(row['Unit Sales']) else 0
-                item_unit_sales = QTableWidgetItem(f"{unit_sales_value:,.0f}")
-                item_unit_sales.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                
-                if unit_sales_value > 100:
-                    item_unit_sales.setBackground(QColor(200, 255, 200))
-                elif unit_sales_value > 50:
-                    item_unit_sales.setBackground(QColor(255, 255, 200))
-                
-                self.table.setItem(row_idx, 5, item_unit_sales)
-                
-                # Flow-type
-                flow_type = str(row.get('Flow-type', 'N/A')) if 'Flow-type' in row and pd.notna(row.get('Flow-type')) else "N/A"
-                item_flow = QTableWidgetItem(flow_type)
-                item_flow.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 6, item_flow)
-                
-                # Secção
-                item_seccao = QTableWidgetItem(str(row['Secção']))
-                item_seccao.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 7, item_seccao)
-                
-                # Sugestão Presentation Stock
-                sugestao = row.get('Sugestão Presentation Stock', 0)
-                item_sugestao = QTableWidgetItem(f"{sugestao:,.0f}")
-                item_sugestao.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                
-                if sugestao > 10:
-                    item_sugestao.setBackground(QColor(200, 230, 255))
-                
-                self.table.setItem(row_idx, 8, item_sugestao)
+            for col in colunas_possiveis:
+                if col in df_display.columns:
+                    colunas_disponiveis.append(col)
             
-            header = self.table.horizontalHeader()
-            header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(1, QHeaderView.Stretch)
-            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(8, QHeaderView.ResizeToContents)
+            self.table.setColumnCount(len(colunas_disponiveis))
+            self.table.setHorizontalHeaderLabels(colunas_disponiveis)
+            
+            # Configurar largura das colunas
+            for i, col in enumerate(colunas_disponiveis):
+                if col == 'Description':
+                    self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Stretch)
+                else:
+                    self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
+            
+            # Preencher tabela
+            for row_idx, (_, row) in enumerate(df_display.iterrows()):
+                for col_idx, col_name in enumerate(colunas_disponiveis):
+                    value = row[col_name] if pd.notna(row[col_name]) else ""
+                    
+                    if col_name in ['Stock', 'Unit Sales', 'Sup.Pack Size', 'Sugestão Presentation Stock']:
+                        try:
+                            text = f"{int(value):,}" if value != "" else "0"
+                        except:
+                            text = str(value)
+                        alignment = Qt.AlignRight | Qt.AlignVCenter
+                    elif col_name == 'PVP Em Vigor':
+                        try:
+                            text = f"€{float(value):,.2f}" if value != "" else "€0.00"
+                        except:
+                            text = str(value)
+                        alignment = Qt.AlignRight | Qt.AlignVCenter
+                    elif col_name == 'Secção':
+                        text = str(value)
+                        alignment = Qt.AlignCenter | Qt.AlignVCenter
+                    else:
+                        text = str(value)
+                        alignment = Qt.AlignLeft | Qt.AlignVCenter
+                    
+                    item = QTableWidgetItem(text)
+                    item.setTextAlignment(alignment)
+                    
+                    # Cores condicionais
+                    if col_name == 'Stock':
+                        try:
+                            stock_val = float(value) if value != "" else 0
+                            if stock_val == 0:
+                                item.setBackground(QColor(255, 200, 200))
+                            elif 'Sugestão Presentation Stock' in colunas_disponiveis:
+                                sugestao_idx = colunas_disponiveis.index('Sugestão Presentation Stock')
+                                sugestao_val = float(row[colunas_disponiveis[sugestao_idx]]) if pd.notna(row[colunas_disponiveis[sugestao_idx]]) else 0
+                                if stock_val < sugestao_val:
+                                    item.setBackground(QColor(255, 255, 200))
+                        except:
+                            pass
+                    
+                    self.table.setItem(row_idx, col_idx, item)
             
             self.label_contador.setText(f"Total de artigos sem Presentation Stock: {len(df):,}")
             
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao atualizar tabela: {str(e)}")
 
-    def exportar_pdf(self):
+    def exportar_pdf_fixed(self):
+        """Versão corrigida para exportar PDF no Windows"""
         if self.df_filtered is None or self.df_filtered.empty:
             QMessageBox.warning(self, "Aviso", "Não existem dados para exportar.")
             return
@@ -919,10 +881,15 @@ class ArtigosSemPSDialog(QDialog):
         file_path, _ = QFileDialog.getSaveFileName(
             self, "Exportar para PDF", "Artigos_Sem_PS.pdf", "PDF (*.pdf)"
         )
+        
         if not file_path:
             return
 
         try:
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            
+            # Preparar dados
             seccao_selecionada = self.combo_seccao.currentText()
             status_selecionado = self.combo_status.currentText()
 
@@ -934,129 +901,179 @@ class ArtigosSemPSDialog(QDialog):
             if 'Status' in df_export.columns and status_selecionado != "Todos os Status":
                 df_export = df_export[df_export['Status'] == status_selecionado]
 
+            self.progress_bar.setValue(30)
+            
+            # Criar documento PDF
             printer = QPrinter(QPrinter.HighResolution)
             printer.setOutputFormat(QPrinter.PdfFormat)
             printer.setOutputFileName(file_path)
-
-            layout = QPageLayout(
-                QPageSize(QPageSize.A4),
-                QPageLayout.Landscape,
-                QMarginsF(10, 10, 10, 10),
-                QPageLayout.Millimeter
-            )
-            printer.setPageLayout(layout)
-
+            printer.setPageSize(QPageSize(QPageSize.A4))
+            printer.setPageOrientation(QPageLayout.Landscape)
+            
+            # Configurar margens menores
+            printer.setPageMargins(5, 10, 5, 10, QPrinter.Millimeter)
+            
             doc = QTextDocument()
             cursor = QTextCursor(doc)
-            doc.setDefaultFont(QFont("Arial", 8))
-
-            title_fmt = QTextCharFormat()
-            title_fmt.setFont(QFont("Arial", 16, QFont.Bold))
-            block_fmt = QTextBlockFormat()
-            block_fmt.setAlignment(Qt.AlignCenter)
-            cursor.insertBlock(block_fmt)
-            cursor.setCharFormat(title_fmt)
+            
+            # Título
+            title_format = QTextCharFormat()
+            title_format.setFont(QFont("Arial", 14, QFont.Bold))
+            cursor.setCharFormat(title_format)
             cursor.insertText("ARTIGOS SEM PRESENTATION STOCK\n\n")
-
-            info = f"Secção: {seccao_selecionada} | " \
-                f"Total artigos: {len(df_export):,} | " \
-                f"Gerado em: {pd.Timestamp.now():%d/%m/%Y %H:%M}\n\n"
-            cursor.insertText(info)
-
-            headers = [
-                'Sku', 'Description', 'Pack', 'PVP', 'Stock', 
-                'Unit Sales', 'Flow', 'Sec', 'Sug. Presentation Stock'
-            ]
-
-            larguras_percentagem = [10, 30, 6, 8, 8, 9, 8, 6, 8]
-
-            table_fmt = QTextTableFormat()
-            table_fmt.setWidth(QTextLength(QTextLength.PercentageLength, 100))
-            table_fmt.setCellPadding(4)
-            table_fmt.setCellSpacing(0)
-            table_fmt.setBorder(0.5)
-            table_fmt.setBorderStyle(QTextFrameFormat.BorderStyle_Solid)
-
-            constraints = [QTextLength(QTextLength.PercentageLength, w) for w in larguras_percentagem]
-            table_fmt.setColumnWidthConstraints(constraints)
-
-            table = cursor.insertTable(len(df_export) + 1, len(headers), table_fmt)
-
-            header_cell_fmt = QTextTableCellFormat()
-            header_cell_fmt.setBackground(QColor("#d0d0d0"))
-
-            header_char_fmt = QTextCharFormat()
-            header_char_fmt.setFontWeight(QFont.Bold)
-            header_char_fmt.setFontPointSize(9)
-
-            for col, texto in enumerate(headers):
+            
+            # Informações
+            info_format = QTextCharFormat()
+            info_format.setFont(QFont("Arial", 10))
+            cursor.setCharFormat(info_format)
+            
+            info_text = f"Secção: {seccao_selecionada} | "
+            info_text += f"Status: {status_selecionado} | "
+            info_text += f"Total de Artigos: {len(df_export):,} | "
+            info_text += f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
+            
+            cursor.insertText(info_text)
+            
+            self.progress_bar.setValue(50)
+            
+            # Criar tabela
+            headers = ['Sku', 'Descrição', 'Pack', 'PVP', 'Stock', 'Vendas', 'Flow', 'Secção', 'Sug. PS']
+            colunas_dados = ['Sku', 'Description', 'Sup.Pack Size', 'PVP Em Vigor', 
+                            'Stock', 'Unit Sales', 'Flow-type', 'Secção', 'Sugestão Presentation Stock']
+            
+            # Verificar quais colunas existem
+            colunas_existentes = []
+            headers_existentes = []
+            for header, coluna in zip(headers, colunas_dados):
+                if coluna in df_export.columns:
+                    colunas_existentes.append(coluna)
+                    headers_existentes.append(header)
+            
+            if not colunas_existentes:
+                QMessageBox.warning(self, "Aviso", "Não há colunas válidas para exportar.")
+                return
+            
+            # Criar tabela no documento
+            table_format = QTextTableFormat()
+            table_format.setHeaderRowCount(1)
+            table_format.setWidth(QTextLength(QTextLength.PercentageLength, 100))
+            table_format.setCellPadding(3)
+            table_format.setCellSpacing(0)
+            table_format.setBorder(1)
+            table_format.setBorderStyle(QTextFrameFormat.BorderStyle_Solid)
+            
+            table = cursor.insertTable(len(df_export) + 1, len(colunas_existentes), table_format)
+            
+            # Cabeçalho
+            header_format = QTextTableCellFormat()
+            header_format.setBackground(QColor("#E0E0E0"))
+            header_char_format = QTextCharFormat()
+            header_char_format.setFontWeight(QFont.Bold)
+            header_char_format.setFontPointSize(9)
+            
+            for col in range(len(colunas_existentes)):
                 cell = table.cellAt(0, col)
-                cell.setFormat(header_cell_fmt)
-                cur = cell.firstCursorPosition()
-                cur.insertText(texto, header_char_fmt)
-
-            normal_fmt = QTextCharFormat()
-            normal_fmt.setFontPointSize(8)
-
-            for row_idx, (_, row) in enumerate(df_export.iterrows(), start=1):
-                for col_idx, col_name in enumerate(headers):
-                    cell = table.cellAt(row_idx, col_idx)
-                    cur = cell.firstCursorPosition()
-
-                    col_mapping = {
-                        'Sku': 'Sku',
-                        'Description': 'Description', 
-                        'Pack': 'Sup.Pack Size',
-                        'PVP': 'PVP Em Vigor',
-                        'Stock': 'Stock',
-                        'Unit Sales': 'Unit Sales',
-                        'Flow': 'Flow-type',
-                        'Sec': 'Secção',
-                        'Sug. Presentation Stock': 'Sugestão Presentation Stock'
-                    }
+                cell.setFormat(header_format)
+                cell_cursor = cell.firstCursorPosition()
+                cell_cursor.setCharFormat(header_char_format)
+                cell_cursor.insertText(headers_existentes[col])
+            
+            self.progress_bar.setValue(70)
+            
+            # Dados
+            cell_format = QTextCharFormat()
+            cell_format.setFontPointSize(8)
+            
+            for row_idx in range(len(df_export)):
+                row_data = df_export.iloc[row_idx]
+                
+                for col_idx, col_name in enumerate(colunas_existentes):
+                    cell = table.cellAt(row_idx + 1, col_idx)
+                    cell_cursor = cell.firstCursorPosition()
+                    cell_cursor.setCharFormat(cell_format)
                     
-                    real_col = col_mapping[col_name]
-                    value = row.get(real_col, '')
-
+                    value = row_data[col_name]
+                    
                     if pd.isna(value):
-                        text = "N/A"
+                        text = ""
+                    elif col_name in ['Stock', 'Unit Sales', 'Sup.Pack Size', 'Sugestão Presentation Stock']:
+                        try:
+                            text = f"{int(value):,}"
+                        except:
+                            text = str(value)
+                    elif col_name == 'PVP Em Vigor':
+                        try:
+                            text = f"€{float(value):,.2f}"
+                        except:
+                            text = str(value)
                     else:
-                        if real_col == "Description":
-                            desc = str(value)
-                            text = desc if len(desc) <= 40 else desc[:37] + "..."
-                        elif real_col in ["Unit Sales", "Stock", "Sup.Pack Size", "Sugestão Presentation Stock"]:
-                            text = f"{int(value):,}" if value else "0"
-                        elif real_col == "PVP Em Vigor":
-                            text = f"€{float(value):,.2f}" if value else "€0"
-                        elif real_col == "Secção":
-                            text = str(value)
-                        else:
-                            text = str(value)
-
-                    cur.insertText(text, normal_fmt)
-
+                        text = str(value)
+                    
+                    # Limitar tamanho da descrição
+                    if col_name == 'Description' and len(text) > 50:
+                        text = text[:47] + "..."
+                    
+                    cell_cursor.insertText(text)
+            
+            self.progress_bar.setValue(90)
+            
+            # Rodapé
             cursor.movePosition(QTextCursor.End)
             cursor.insertBlock()
-            footer = QTextCharFormat()
-            footer.setFontPointSize(7)
-            footer.setFontItalic(True)
-            footer.setForeground(QColor("gray"))
-            cursor.setCharFormat(footer)
-            cursor.insertText(f"Documento gerado automaticamente • {len(df_export):,} artigos sem Presentation Stock")
-
-            doc.print_(printer)
-
-            QMessageBox.information(
+            footer_format = QTextCharFormat()
+            footer_format.setFontPointSize(7)
+            footer_format.setFontItalic(True)
+            cursor.setCharFormat(footer_format)
+            cursor.insertText(f"Exportado em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} | Total: {len(df_export):,} artigos")
+            
+            # Imprimir
+            doc.setPageSize(printer.pageRect().size())
+            painter = QPainter(printer)
+            
+            # Renderizar página por página
+            page_rect = printer.pageRect()
+            doc_size = doc.size()
+            y_offset = 0
+            
+            while y_offset < doc_size.height():
+                painter.save()
+                painter.translate(0, -y_offset)
+                doc.drawContents(painter)
+                painter.restore()
+                
+                if y_offset + page_rect.height() < doc_size.height():
+                    printer.newPage()
+                    y_offset += page_rect.height()
+                else:
+                    break
+            
+            painter.end()
+            
+            self.progress_bar.setValue(100)
+            
+            # Abrir o PDF automaticamente
+            resposta = QMessageBox.question(
                 self, "Sucesso",
                 f"PDF exportado com sucesso!\n\n"
                 f"→ {len(df_export):,} artigos exportados\n"
-                f"→ Guardado em: {os.path.basename(file_path)}"
+                f"→ Guardado em: {os.path.basename(file_path)}\n\n"
+                f"Deseja abrir o ficheiro agora?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
             )
-
+            
+            if resposta == QMessageBox.Yes:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
+            
         except Exception as e:
-            QMessageBox.critical(self, "Erro", f"Erro ao exportar PDF:\n{str(e)}")
+            QMessageBox.critical(self, "Erro", f"Erro ao exportar PDF:\n{str(e)}\n\nDetalhes: {type(e).__name__}")
+            import traceback
+            print(traceback.format_exc())
+        finally:
+            self.progress_bar.setVisible(False)
 
     def exportar_excel(self):
+        """Exportar para Excel com tratamento de memória"""
         if self.df_filtered is None or self.df_filtered.empty:
             QMessageBox.warning(self, "Aviso", "Não há dados para exportar.")
             return
@@ -1065,85 +1082,110 @@ class ArtigosSemPSDialog(QDialog):
             file_path, _ = QFileDialog.getSaveFileName(
                 self,
                 "Exportar para Excel",
-                "artigos_sem_ps.xlsx",
+                f"artigos_sem_ps_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 "Excel Files (*.xlsx)"
             )
             
-            if file_path:
-                self.progress_bar.setVisible(True)
-                self.progress_bar.setValue(50)
-                
-                seccao_selecionada = self.combo_seccao.currentText()
-                status_selecionado = self.combo_status.currentText()
+            if not file_path:
+                return
+            
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(30)
+            
+            # Preparar dados
+            seccao_selecionada = self.combo_seccao.currentText()
+            status_selecionado = self.combo_status.currentText()
 
-                if seccao_selecionada == "Todas as Secções":
-                    df_export = self.df_filtered.copy()
-                else:
-                    df_export = self.df_filtered[self.df_filtered['Secção'] == seccao_selecionada].copy()
+            if seccao_selecionada == "Todas as Secções":
+                df_export = self.df_filtered.copy()
+            else:
+                df_export = self.df_filtered[self.df_filtered['Secção'] == seccao_selecionada].copy()
 
-                if 'Status' in df_export.columns and status_selecionado != "Todos os Status":
-                    df_export = df_export[df_export['Status'] == status_selecionado]
+            if 'Status' in df_export.columns and status_selecionado != "Todos os Status":
+                df_export = df_export[df_export['Status'] == status_selecionado]
+            
+            self.progress_bar.setValue(60)
+            
+            # Exportar para Excel
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                df_export.to_excel(writer, index=False, sheet_name='Artigos Sem PS')
                 
-                colunas_export = [
-                    'Sku', 'Description', 'Sup.Pack Size', 'PVP Em Vigor', 'Stock', 
-                    'Unit Sales', 'Flow-type', 'Secção', 'Sugestão Presentation Stock'
-                ]
-                
-                colunas_disponiveis = [col for col in colunas_export if col in df_export.columns]
-                df_export = df_export[colunas_disponiveis].copy()
-                
-                with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-                    df_export.to_excel(writer, index=False, sheet_name='Artigos Sem Presentation Stock')
+                # Ajustar largura das colunas
+                worksheet = writer.sheets['Artigos Sem PS']
+                for column in worksheet.columns:
+                    max_length = 0
+                    column_letter = column[0].column_letter
                     
-                    worksheet = writer.sheets['Artigos Sem Presentation Stock']
+                    for cell in column:
+                        try:
+                            if cell.value:
+                                cell_length = len(str(cell.value))
+                                max_length = max(max_length, cell_length)
+                        except:
+                            pass
                     
-                    for column in worksheet.columns:
-                        max_length = 0
-                        column_letter = column[0].column_letter
-                        
-                        for cell in column:
-                            try:
-                                if cell.value:
-                                    cell_length = len(str(cell.value))
-                                    max_length = max(max_length, cell_length)
-                            except:
-                                pass
-                        
-                        adjusted_width = min(max_length + 2, 50)
-                        worksheet.column_dimensions[column_letter].width = adjusted_width
-                    
-                self.progress_bar.setValue(100)
-                
-                QMessageBox.information(
-                    self, 
-                    "Sucesso", 
-                    f"Dados exportados com sucesso!\n{len(df_export)} artigos exportados."
-                )
-                
+                    adjusted_width = min(max_length + 2, 50)
+                    worksheet.column_dimensions[column_letter].width = adjusted_width
+            
+            self.progress_bar.setValue(100)
+            
+            QMessageBox.information(
+                self, 
+                "Sucesso", 
+                f"Dados exportados com sucesso!\n"
+                f"{len(df_export)} artigos exportados para:\n{file_path}"
+            )
+            
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao exportar: {str(e)}")
         finally:
             self.progress_bar.setVisible(False)
+
+    def processar_em_lote(self):
+        """Processar dados em lotes para evitar congelamento da interface"""
+        pass
 
     def limpar_tudo(self):
         self.df = None
         self.df_filtered = None
         self.df_com_ps = None
         self.table.setRowCount(0)
+        self.table.setColumnCount(0)
         self.label_file.setText("Nenhum ficheiro carregado")
         self.combo_seccao.clear()
         self.combo_seccao.addItem("Todas as Secções")
         self.combo_status.clear()
         self.combo_status.addItem("Todos os Status")
-        self.combo_stock.clear()  # NOVO
-        self.combo_stock.addItem("Todos")  # NOVO
-        self.combo_stock.addItem("Stock > 0")  # NOVO
-        self.combo_stock.addItem("Stock = 0")  # NOVO
-        self.combo_status.setEnabled(True)
+        self.combo_stock.clear()
+        self.combo_stock.addItem("Todos")
+        self.combo_stock.addItem("Stock > 0")
+        self.combo_stock.addItem("Stock = 0")
+        self.search_input.clear()
         self.label_contador.setText("Total de artigos sem Presentation Stock: 0")
         self.btn_exportar_excel.setEnabled(False)
         self.btn_exportar_pdf.setEnabled(False)
         self.btn_ml.setEnabled(False)
+
+    def carregar_csv(self, file_path):
+        """Método para carregar CSV"""
+        try:
+            # Tentar diferentes encodings
+            encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+            
+            for encoding in encodings:
+                try:
+                    df = pd.read_csv(file_path, encoding=encoding, sep=None, engine='python')
+                    return df
+                except UnicodeDecodeError:
+                    continue
+                except Exception:
+                    continue
+            
+            # Se nenhum encoding funcionar, tentar com delimitador específico
+            return pd.read_csv(file_path, encoding='latin-1', delimiter=';')
+            
+        except Exception as e:
+            raise Exception(f"Erro ao ler ficheiro CSV: {str(e)}")
 
 def mostrar_artigos_sem_ps():
     dialog = ArtigosSemPSDialog()
@@ -1152,6 +1194,16 @@ def mostrar_artigos_sem_ps():
 if __name__ == "__main__":
     import sys
     app = QApplication(sys.argv)
+    
+    # Melhorar a aparência no Windows
+    app.setStyle('Fusion')
+    
+    # Configurar para alta DPI no Windows
+    if hasattr(Qt, 'AA_EnableHighDpiScaling'):
+        app.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
+        app.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    
     dialog = ArtigosSemPSDialog()
     dialog.show()
     sys.exit(app.exec_())
