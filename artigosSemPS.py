@@ -39,6 +39,8 @@ from PyQt5.QtGui import (
 from PyQt5.QtCore import Qt, QMarginsF
 from PyQt5.QtGui import QTextFrameFormat
 
+import multiprocessing
+
 class ArtigosSemPSDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -495,6 +497,9 @@ class ArtigosSemPSDialog(QDialog):
 
     def treinar_modelo_ml(self, X_train, y_train):
         """Treina modelo com validação cruzada e seleção do melhor"""
+
+        if sys.platform.startswith('win'):
+            multiprocessing.set_start_method('spawn', force=True)
         
         modelos = {
             'RandomForest': RandomForestRegressor(
