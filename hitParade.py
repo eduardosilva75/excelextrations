@@ -473,7 +473,7 @@ class HitParadeDialog(QDialog):
                 self.table.setColumnCount(10)
                 self.table.setHorizontalHeaderLabels([
                     'Sku', 'Description', 'EAN', 'Unit Sales', 'Sales Value', 'Stock', 
-                    '%Vendas', 'Ultima Recepcao', 'Flow-type', 'Status'
+                    '%Vendas', 'Ultima Recepcao', 'Flow-type', 'Status', 'GLP'
                 ])
                 
                 # Calcular valores para o gradiente de cores da Unit Sales
@@ -563,6 +563,12 @@ class HitParadeDialog(QDialog):
                     item_status = QTableWidgetItem(status)
                     item_status.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
                     self.table.setItem(row_idx, 9, item_status)
+
+                    # GLP
+                    glp = str(row.get('GLP', 'N/A')) if 'GLP' in row and pd.notna(row.get('GLP')) else "N/A"
+                    item_glp = QTableWidgetItem(glp)
+                    item_glp.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+                    self.table.setItem(row_idx, 9, item_glp)
                 
                 # Ajustar tamanho das colunas
                 header = self.table.horizontalHeader()
@@ -576,6 +582,7 @@ class HitParadeDialog(QDialog):
                 header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # Ultima Recepcao
                 header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # Flow-type
                 header.setSectionResizeMode(9, QHeaderView.ResizeToContents)  # Status
+                header.setSectionResizeMode(10, QHeaderView.ResizeToContents)  # Status
                 
                 # Atualizar contador
                 self.label_contador.setText(f"Total de artigos: {len(self.df_filtered):,}")
@@ -643,7 +650,7 @@ class HitParadeDialog(QDialog):
             # ------------------- Cabeçalhos (Status → St) -------------------
             headers = [
                 'Sku', 'Description', 'EAN', 'Unit Sales', 'Sales Value',
-                'Stock', '%Vendas', 'Ultima Recepcao', 'Flow-type', 'S'   # ← mudado aqui
+                'Stock', '%Vendas', 'Ultima Recepcao', 'Flow-type', 'S', 'GLP'   # ← mudado aqui
             ]
 
             # ------------------- Larguras ajustadas (St mais estreito) -------------------
@@ -656,8 +663,9 @@ class HitParadeDialog(QDialog):
                 6,   # Stock
                 8,   # %Vendas
                 10,  # Ultima Recepcao
-                9,   # Flow-type
-                4    # St ← reduzido de 6 para 4% (agora cabe perfeitamente)
+                8,   # Flow-type
+                2,    # St ← reduzido de 6 para 4% (agora cabe perfeitamente)
+                2     #GLP
             ]  # soma = 100%
 
             # ------------------- Formato da tabela -------------------
@@ -777,7 +785,7 @@ class HitParadeDialog(QDialog):
                 
                 # Criar DataFrame para exportação com todas as colunas
                 colunas_export = ['Sku', 'Description', 'EAN', 'Unit Sales', 'Sales Value', 'Stock', 
-                                '%Vendas', 'Ultima Recepcao', 'Flow-type', 'Status', 'Secção']
+                                '%Vendas', 'Ultima Recepcao', 'Flow-type', 'Status', 'GLP']
                 
                 # Filtrar apenas colunas que existem no DataFrame
                 colunas_disponiveis = [col for col in colunas_export if col in self.df_filtered.columns]
