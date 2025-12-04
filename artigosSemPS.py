@@ -452,13 +452,17 @@ class ArtigosSemPSDialog(QDialog):
             ('encoder', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
         ])
         
+        # ✅ FIX: n_jobs=1 para evitar multiprocessing no Windows
+        n_jobs = 1 if sys.platform.startswith('win') else -1
+        
         # Combina transformers
         preprocessor = ColumnTransformer(
             transformers=[
                 ('num', numeric_transformer, numeric_features),
                 ('cat', categorical_transformer, categorical_features)
             ],
-            remainder='drop'
+            remainder='drop',
+            n_jobs=n_jobs  # ✅ ADICIONADO
         )
         
         # Transforma dados
@@ -497,7 +501,10 @@ class ArtigosSemPSDialog(QDialog):
 
 
     def treinar_modelo_ml(self, X_train, y_train):
-        """Treina modelo com validação cruzada e seleção do melhor"""        
+        """Treina modelo com validação cruzada e seleção do melhor"""
+        
+        # ✅ FIX: Define n_jobs baseado no sistema operacional
+        n_jobs = 1 if sys.platform.startswith('win') else -1
         
         modelos = {
             'RandomForest': RandomForestRegressor(
@@ -506,7 +513,7 @@ class ArtigosSemPSDialog(QDialog):
                 min_samples_split=5,
                 min_samples_leaf=2,
                 random_state=42,
-                n_jobs=-1
+                n_jobs=n_jobs  # ✅ ALTERADO: era -1
             ),
             'GradientBoosting': GradientBoostingRegressor(
                 n_estimators=100,
@@ -514,12 +521,14 @@ class ArtigosSemPSDialog(QDialog):
                 learning_rate=0.1,
                 subsample=0.8,
                 random_state=42
+                # GradientBoosting não tem n_jobs (usa apenas 1 core)
             ),
             'AdaBoost': AdaBoostRegressor(
                 estimator=DecisionTreeRegressor(max_depth=6, min_samples_split=15),
                 n_estimators=100,
                 learning_rate=0.1,
                 random_state=42
+                # AdaBoost não tem n_jobs (é sequencial)
             )
         }
         
@@ -534,11 +543,12 @@ class ArtigosSemPSDialog(QDialog):
                 # Validação cruzada
                 cv_folds = min(5, len(X_train) // 2)  # Ajusta número de folds
                 
+                # ✅ FIX: n_jobs=1 no cross_val_score para Windows
                 scores = cross_val_score(
                     modelo, X_train, y_train, 
                     cv=cv_folds, 
                     scoring='neg_mean_absolute_error',
-                    n_jobs=-1
+                    n_jobs=n_jobs  # ✅ ALTERADO: era -1
                 )
                 
                 mae_score = -scores.mean()
@@ -563,7 +573,11 @@ class ArtigosSemPSDialog(QDialog):
         else:
             # Fallback para modelo simples
             print("\n⚠ Usando modelo fallback (RandomForest simplificado)")
-            modelo = RandomForestRegressor(n_estimators=50, random_state=42)
+            modelo = RandomForestRegressor(
+                n_estimators=50, 
+                random_state=42,
+                n_jobs=n_jobs  # ✅ ADICIONADO
+            )
             modelo.fit(X_train, y_train)
             return modelo, 0, "RandomForest (Fallback)"
 
