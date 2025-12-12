@@ -390,10 +390,24 @@ class TendenciasDialog(QDialog):
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)
             
-            # Fazer merge dos dois DataFrames pelo SKU
+            # Identificar todas as colunas que precisamos dos ficheiros
+            colunas_base = ['Sku', 'Description', 'Unit Sales', 'Sales Value', 'Secção']
+            
+            # Colunas adicionais que queremos manter
+            colunas_adicionais = ['Stock', 'Stock In Transit', 'Stock Expected', 'Stock On Order',
+                                'Sup.Pack Size', 'Flow-type', 'GLP']
+            
+            # Filtrar apenas colunas que existem em ambos os DataFrames
+            colunas_periodo1 = colunas_base + [col for col in colunas_adicionais if col in self.df_periodo1.columns]
+            colunas_periodo2 = colunas_base + [col for col in colunas_adicionais if col in self.df_periodo2.columns]
+            
+            print(f"Colunas carregadas do Período 1: {colunas_periodo1}")
+            print(f"Colunas carregadas do Período 2: {colunas_periodo2}")
+            
+            # Fazer merge dos dois DataFrames pelo SKU incluindo todas as colunas
             df_merge = pd.merge(
-                self.df_periodo1[['Sku', 'Description', 'Unit Sales', 'Sales Value', 'Secção']],
-                self.df_periodo2[['Sku', 'Description', 'Unit Sales', 'Sales Value', 'Secção']],
+                self.df_periodo1[colunas_periodo1],
+                self.df_periodo2[colunas_periodo2],
                 on='Sku',
                 suffixes=('_P1', '_P2'),
                 how='outer'
@@ -401,23 +415,52 @@ class TendenciasDialog(QDialog):
             
             self.progress_bar.setValue(30)
             
-            # Preencher valores NaN com 0
-            df_merge['Unit Sales_P1'] = df_merge['Unit Sales_P1'].fillna(0)
-            df_merge['Unit Sales_P2'] = df_merge['Unit Sales_P2'].fillna(0)
-            df_merge['Sales Value_P1'] = df_merge['Sales Value_P1'].fillna(0)
-            df_merge['Sales Value_P2'] = df_merge['Sales Value_P2'].fillna(0)
+            # Preencher valores NaN para colunas numéricas
+            colunas_numericas = ['Unit Sales', 'Sales Value', 'Stock', 'Stock In Transit', 
+                                'Stock Expected', 'Stock On Order', 'Sup.Pack Size']
             
-            # Usar Description do P2 se P1 estiver vazio, e vice-versa
-            df_merge['Description_P1'] = df_merge['Description_P1'].fillna(df_merge['Description_P2'])
-            df_merge['Description_P2'] = df_merge['Description_P2'].fillna(df_merge['Description_P1'])
+            for col_base in colunas_numericas:
+                for suffix in ['_P1', '_P2']:
+                    col_name = f"{col_base}{suffix}"
+                    if col_name in df_merge.columns:
+                        df_merge[col_name] = df_merge[col_name].fillna(0)
             
-            # Usar a Description do P2 como principal (ou P1 se P2 não existir)
-            df_merge['Description'] = df_merge['Description_P2'].fillna(df_merge['Description_P1'])
+            # Preencher valores para colunas de texto
+            if 'Description_P1' in df_merge.columns and 'Description_P2' in df_merge.columns:
+                df_merge['Description_P1'] = df_merge['Description_P1'].fillna(df_merge['Description_P2'])
+                df_merge['Description_P2'] = df_merge['Description_P2'].fillna(df_merge['Description_P1'])
+                df_merge['Description'] = df_merge['Description_P2'].fillna(df_merge['Description_P1'])
             
-            # Usar Secção do P2 se P1 estiver vazio, e vice-versa
-            df_merge['Secção_P1'] = df_merge['Secção_P1'].fillna(df_merge['Secção_P2'])
-            df_merge['Secção_P2'] = df_merge['Secção_P2'].fillna(df_merge['Secção_P1'])
-            df_merge['Secção'] = df_merge['Secção_P2']
+            # Preencher secções
+            if 'Secção_P1' in df_merge.columns and 'Secção_P2' in df_merge.columns:
+                df_merge['Secção_P1'] = df_merge['Secção_P1'].fillna(df_merge['Secção_P2'])
+                df_merge['Secção_P2'] = df_merge['Secção_P2'].fillna(df_merge['Secção_P1'])
+                df_merge['Secção'] = df_merge['Secção_P2']
+            
+            # Preencher colunas de texto adicionais (Flow-type, GLP)
+            colunas_texto = ['Flow-type', 'GLP']
+            for col in colunas_texto:
+                col_p1 = f"{col}_P1"
+                col_p2 = f"{col}_P2"
+                if col_p1 in df_merge.columns and col_p2 in df_merge.columns:
+                    # Usar valor do P2, se vazio usar P1
+                    df_merge[col] = df_merge[col_p2].fillna(df_merge[col_p1])
+                elif col_p1 in df_merge.columns:
+                    df_merge[col] = df_merge[col_p1]
+                elif col_p2 in df_merge.columns:
+                    df_merge[col] = df_merge[col_p2]
+                else:
+                    df_merge[col] = 'N/A'
+            
+            # Para Sup.Pack Size, usar a média dos dois períodos ou um deles
+            if 'Sup.Pack Size_P1' in df_merge.columns and 'Sup.Pack Size_P2' in df_merge.columns:
+                df_merge['Sup.Pack Size'] = df_merge[['Sup.Pack Size_P1', 'Sup.Pack Size_P2']].mean(axis=1)
+            elif 'Sup.Pack Size_P1' in df_merge.columns:
+                df_merge['Sup.Pack Size'] = df_merge['Sup.Pack Size_P1']
+            elif 'Sup.Pack Size_P2' in df_merge.columns:
+                df_merge['Sup.Pack Size'] = df_merge['Sup.Pack Size_P2']
+            else:
+                df_merge['Sup.Pack Size'] = 1  # Valor padrão
             
             self.progress_bar.setValue(60)
             
@@ -436,8 +479,24 @@ class TendenciasDialog(QDialog):
                 axis=1
             )
             
+            # Calcular Stock Total (soma de todas as colunas de stock)
+            stock_cols = ['Stock_P1', 'Stock_P2', 'Stock In Transit_P1', 'Stock In Transit_P2',
+                        'Stock Expected_P1', 'Stock Expected_P2', 'Stock On Order_P1', 'Stock On Order_P2']
+            
+            # Filtrar colunas que existem
+            stock_cols_existentes = [col for col in stock_cols if col in df_merge.columns]
+            
+            if stock_cols_existentes:
+                # Usar valor do Período 2, se não existir usar Período 1
+                df_merge['Stock Total'] = 0
+                for col in stock_cols_existentes:
+                    df_merge['Stock Total'] += df_merge[col].fillna(0)
+            else:
+                df_merge['Stock Total'] = 0
+            
             # Arredondar para 2 casas decimais
             df_merge['% Crescimento'] = df_merge['% Crescimento'].round(2)
+            df_merge['Stock Total'] = df_merge['Stock Total'].round(0)
             
             self.progress_bar.setValue(80)
             
@@ -455,6 +514,12 @@ class TendenciasDialog(QDialog):
             
             self.progress_bar.setValue(100)
             
+            # Debug: mostrar colunas disponíveis
+            print(f"Colunas no df_tendencias: {list(self.df_tendencias.columns)}")
+            print(f"Exemplo de valores para Sup.Pack Size: {self.df_tendencias['Sup.Pack Size'].head()}")
+            print(f"Exemplo de valores para Flow-type: {self.df_tendencias['Flow-type'].head()}")
+            print(f"Exemplo de valores para GLP: {self.df_tendencias['GLP'].head()}")
+            
             # Atualizar interface
             self.btn_exportar_excel.setEnabled(True)
             self.btn_exportar_pdf.setEnabled(True)
@@ -468,6 +533,8 @@ class TendenciasDialog(QDialog):
             
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao processar tendências: {str(e)}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.progress_bar.setVisible(False)
 
@@ -541,13 +608,13 @@ class TendenciasDialog(QDialog):
             return
         
         try:
-            # Configurar tabela com 9 colunas
+            # Configurar tabela com 13 colunas
             self.table.setRowCount(len(self.df_filtered))
-            self.table.setColumnCount(9)
+            self.table.setColumnCount(13)
             self.table.setHorizontalHeaderLabels([
-                'Sku', 'Description', 'Unit Sales P1', 'Unit Sales P2', 
+                'Sku', 'Description', 'Stock Total', 'Unit Sales P1', 'Unit Sales P2', 
                 'Sales Value P1', 'Sales Value P2', '% Crescimento', 
-                'Secção', 'Tendência'
+                'Secção', 'Tendência', 'Sup.Pack Size', 'Flow-type', 'GLP'
             ])
             
             # Calcular valores para o gradiente de cores do % Crescimento
@@ -569,29 +636,44 @@ class TendenciasDialog(QDialog):
                 item_desc.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 self.table.setItem(row_idx, 1, item_desc)
                 
+                # Stock Total
+                stock_total = row.get('Stock Total', 0) if pd.notna(row.get('Stock Total', 0)) else 0
+                item_stock_total = QTableWidgetItem(f"{int(stock_total):,}")
+                item_stock_total.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                
+                # Aplicar cor com base no stock total
+                if stock_total == 0:
+                    item_stock_total.setBackground(QColor(255, 200, 200))  # Vermelho claro para stock 0
+                elif stock_total < 10:
+                    item_stock_total.setBackground(QColor(255, 255, 200))  # Amarelo claro para stock baixo
+                else:
+                    item_stock_total.setBackground(QColor(200, 255, 200))  # Verde claro para stock suficiente
+                
+                self.table.setItem(row_idx, 2, item_stock_total)
+                
                 # Unit Sales P1
                 unit_sales_p1 = row['Unit Sales_P1'] if pd.notna(row['Unit Sales_P1']) else 0
                 item_unit_sales_p1 = QTableWidgetItem(f"{unit_sales_p1:,.0f}")
                 item_unit_sales_p1.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 2, item_unit_sales_p1)
+                self.table.setItem(row_idx, 3, item_unit_sales_p1)
                 
                 # Unit Sales P2
                 unit_sales_p2 = row['Unit Sales_P2'] if pd.notna(row['Unit Sales_P2']) else 0
                 item_unit_sales_p2 = QTableWidgetItem(f"{unit_sales_p2:,.0f}")
                 item_unit_sales_p2.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 3, item_unit_sales_p2)
+                self.table.setItem(row_idx, 4, item_unit_sales_p2)
                 
                 # Sales Value P1
                 sales_value_p1 = row['Sales Value_P1'] if pd.notna(row['Sales Value_P1']) else 0
                 item_sales_value_p1 = QTableWidgetItem(f"€ {sales_value_p1:,.2f}")
                 item_sales_value_p1.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 4, item_sales_value_p1)
+                self.table.setItem(row_idx, 5, item_sales_value_p1)
                 
                 # Sales Value P2
                 sales_value_p2 = row['Sales Value_P2'] if pd.notna(row['Sales Value_P2']) else 0
                 item_sales_value_p2 = QTableWidgetItem(f"€ {sales_value_p2:,.2f}")
                 item_sales_value_p2.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 5, item_sales_value_p2)
+                self.table.setItem(row_idx, 6, item_sales_value_p2)
                 
                 # % Crescimento com gradiente de cores
                 percent_crescimento = row['% Crescimento'] if pd.notna(row['% Crescimento']) else 0
@@ -631,13 +713,13 @@ class TendenciasDialog(QDialog):
                     item_percent.setBackground(QColor(255, 0, 0))  # Vermelho forte para descontinuados
                     item_percent.setForeground(QColor(255, 255, 255))
                 
-                self.table.setItem(row_idx, 6, item_percent)
+                self.table.setItem(row_idx, 7, item_percent)
                 
                 # Secção
                 seccao = str(row['Secção']) if pd.notna(row['Secção']) else "N/A"
                 item_seccao = QTableWidgetItem(seccao)
                 item_seccao.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 7, item_seccao)
+                self.table.setItem(row_idx, 8, item_seccao)
                 
                 # Tendência (indicador visual)
                 if percent_crescimento == 99999:
@@ -655,25 +737,49 @@ class TendenciasDialog(QDialog):
                 
                 item_tendencia = QTableWidgetItem(tendencia_text)
                 item_tendencia.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 8, item_tendencia)
+                self.table.setItem(row_idx, 9, item_tendencia)
+                
+                # Sup.Pack Size
+                sup_pack_size = row.get('Sup.Pack Size', 0) if pd.notna(row.get('Sup.Pack Size', 0)) else 0
+                item_sup_pack = QTableWidgetItem(f"{int(sup_pack_size):,}")
+                item_sup_pack.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.table.setItem(row_idx, 10, item_sup_pack)
+                
+                # Flow-type
+                flow_type = str(row.get('Flow-type', 'N/A')) if pd.notna(row.get('Flow-type', 'N/A')) else "N/A"
+                item_flow = QTableWidgetItem(flow_type)
+                item_flow.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+                self.table.setItem(row_idx, 11, item_flow)
+                
+                # GLP
+                glp = str(row.get('GLP', 'N/A')) if pd.notna(row.get('GLP', 'N/A')) else "N/A"
+                item_glp = QTableWidgetItem(glp)
+                item_glp.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+                self.table.setItem(row_idx, 12, item_glp)
             
             # Ajustar tamanho das colunas
             header = self.table.horizontalHeader()
             header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Sku
             header.setSectionResizeMode(1, QHeaderView.Stretch)          # Description
-            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Unit Sales P1
-            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Unit Sales P2
-            header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # Sales Value P1
-            header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # Sales Value P2
-            header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # % Crescimento
-            header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # Secção
-            header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # Tendência
+            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Stock Total
+            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Unit Sales P1
+            header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # Unit Sales P2
+            header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # Sales Value P1
+            header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # Sales Value P2
+            header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # % Crescimento
+            header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # Secção
+            header.setSectionResizeMode(9, QHeaderView.ResizeToContents)  # Tendência
+            header.setSectionResizeMode(10, QHeaderView.ResizeToContents) # Sup.Pack Size
+            header.setSectionResizeMode(11, QHeaderView.ResizeToContents) # Flow-type
+            header.setSectionResizeMode(12, QHeaderView.ResizeToContents) # GLP
             
             # Atualizar contador
             self.label_contador.setText(f"Total de artigos: {len(self.df_filtered):,}")
             
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao atualizar tabela: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def exportar_pdf(self):
         if self.df_filtered is None or self.df_filtered.empty:
@@ -702,7 +808,7 @@ class TendenciasDialog(QDialog):
 
             doc = QTextDocument()
             cursor = QTextCursor(doc)
-            doc.setDefaultFont(QFont("Arial", 8))
+            doc.setDefaultFont(QFont("Arial", 7))  # Fonte menor para caber mais colunas
 
             # Título e info
             title_fmt = QTextCharFormat()
@@ -718,29 +824,33 @@ class TendenciasDialog(QDialog):
                 f"Gerado em: {pd.Timestamp.now():%d/%m/%Y %H:%M}\n\n"
             cursor.insertText(info)
 
-            # Cabeçalhos
+            # Cabeçalhos atualizados com todas as colunas
             headers = [
-                'Sku', 'Description', 'Unit P1', 'Unit P2', 'Value P1',
-                'Value P2', '% Cresc.', 'Secção', 'Tendência'
+                'Sku', 'Description', 'Stock', 'Unit P1', 'Unit P2', 'Value P1',
+                'Value P2', '% Cresc.', 'Secção', 'Tend.', 'Sup.Pack', 'Flow', 'GLP'
             ]
 
-            # Larguras ajustadas
+            # Larguras ajustadas para 13 colunas
             larguras_percentagem = [
-                8,   # Sku
-                30,  # Description
-                7,   # Unit P1
-                7,   # Unit P2
-                8,   # Value P1
-                8,   # Value P2
-                8,   # % Cresc.
-                6,   # Secção
-                8    # Tendência
+                6,   # Sku (6%)
+                22,  # Description (22%)
+                5,   # Stock (5%)
+                5,   # Unit P1 (5%)
+                5,   # Unit P2 (5%)
+                6,   # Value P1 (6%)
+                6,   # Value P2 (6%)
+                6,   # % Cresc. (6%)
+                4,   # Secção (4%)
+                5,   # Tend. (5%)
+                5,   # Sup.Pack (5%)
+                5,   # Flow (5%)
+                4    # GLP (4%)
             ]  # soma = 100%
 
             # Formato da tabela
             table_fmt = QTextTableFormat()
             table_fmt.setWidth(QTextLength(QTextLength.PercentageLength, 100))
-            table_fmt.setCellPadding(5)
+            table_fmt.setCellPadding(4)
             table_fmt.setCellSpacing(0)
             table_fmt.setBorder(0.5)
             table_fmt.setBorderStyle(QTextFrameFormat.BorderStyle_Solid)
@@ -756,17 +866,32 @@ class TendenciasDialog(QDialog):
 
             header_char_fmt = QTextCharFormat()
             header_char_fmt.setFontWeight(QFont.Bold)
-            header_char_fmt.setFontPointSize(9)
+            header_char_fmt.setFontPointSize(8)
 
             for col, texto in enumerate(headers):
                 cell = table.cellAt(0, col)
                 cell.setFormat(header_cell_fmt)
                 cur = cell.firstCursorPosition()
-                cur.insertText(texto, header_char_fmt)
+                
+                # Ajustar tooltips para cabeçalhos abreviados
+                if texto == 'Stock':
+                    texto_display = 'Stock'
+                elif texto == 'Tend.':
+                    texto_display = 'Tend.'
+                elif texto == 'Sup.Pack':
+                    texto_display = 'Sup.Pack'
+                elif texto == 'Flow':
+                    texto_display = 'Flow'
+                elif texto == 'GLP':
+                    texto_display = 'GLP'
+                else:
+                    texto_display = texto
+                    
+                cur.insertText(texto_display, header_char_fmt)
 
             # Dados
             normal_fmt = QTextCharFormat()
-            normal_fmt.setFontPointSize(8)
+            normal_fmt.setFontPointSize(7)
 
             for row_idx, (_, row) in enumerate(self.df_filtered.iterrows(), start=1):
                 for col_idx, col_name in enumerate(headers):
@@ -777,7 +902,10 @@ class TendenciasDialog(QDialog):
                         text = str(row['Sku'])
                     elif col_name == 'Description':
                         desc = str(row['Description'])
-                        text = desc if len(desc) <= 35 else desc[:32] + "..."
+                        text = desc if len(desc) <= 25 else desc[:22] + "..."
+                    elif col_name == 'Stock':
+                        stock_total = row.get('Stock Total', 0)
+                        text = f"{int(stock_total):,}" if stock_total else "0"
                     elif col_name == 'Unit P1':
                         text = f"{int(row['Unit Sales_P1']):,}" if row['Unit Sales_P1'] else "0"
                     elif col_name == 'Unit P2':
@@ -793,37 +921,107 @@ class TendenciasDialog(QDialog):
                         elif percent == -100:
                             text = "Descont."
                         else:
-                            text = f"{percent:+.1f}%"
+                            text = f"{percent:+.0f}%"  # 0 casas decimais para economizar espaço
                     elif col_name == 'Secção':
                         text = str(row['Secção']) if pd.notna(row['Secção']) else "N/A"
-                    elif col_name == 'Tendência':
+                    elif col_name == 'Tend.':
                         percent = row['% Crescimento']
                         if percent == 99999:
                             text = "NOVO"
                         elif percent == -100:
-                            text = "DESCONT."
+                            text = "DESC"
                         elif percent > 20:
                             text = "ALTA"
                         elif percent > 0:
-                            text = "SUBIU"
+                            text = "↑"
                         elif percent > -20:
-                            text = "BAIXOU"
+                            text = "↓"
                         else:
                             text = "QUEDA"
+                    elif col_name == 'Sup.Pack':
+                        sup_pack = row.get('Sup.Pack Size', 0)
+                        text = f"{int(sup_pack)}" if sup_pack else "0"
+                    elif col_name == 'Flow':
+                        flow_type = row.get('Flow-type', 'N/A')
+                        if isinstance(flow_type, str) and len(flow_type) > 8:
+                            text = flow_type[:5] + ".."
+                        else:
+                            text = str(flow_type) if pd.notna(flow_type) else "N/A"
+                    elif col_name == 'GLP':
+                        glp = row.get('GLP', 'N/A')
+                        text = str(glp) if pd.notna(glp) else "N/A"
                     else:
-                        text = str(row[col_name]) if pd.notna(row[col_name]) else "N/A"
+                        text = "N/A"
+
+                    # Aplicar formatação condicional para % Crescimento
+                    if col_name == '% Cresc.':
+                        percent = row['% Crescimento']
+                        cell_fmt = QTextTableCellFormat()
+                        
+                        if percent == 99999:  # Novo
+                            cell_fmt.setBackground(QColor(200, 255, 200))  # Verde claro
+                        elif percent == -100:  # Descontinuado
+                            cell_fmt.setBackground(QColor(255, 200, 200))  # Vermelho claro
+                        elif percent > 20:  # Alta significativa
+                            cell_fmt.setBackground(QColor(220, 255, 220))  # Verde muito claro
+                        elif percent > 0:  # Crescimento
+                            cell_fmt.setBackground(QColor(240, 255, 240))  # Verde muito muito claro
+                        elif percent > -20:  # Queda leve
+                            cell_fmt.setBackground(QColor(255, 240, 240))  # Vermelho muito muito claro
+                        else:  # Queda significativa
+                            cell_fmt.setBackground(QColor(255, 220, 220))  # Vermelho muito claro
+                        
+                        cell.setFormat(cell_fmt)
+                    
+                    # Aplicar formatação para Stock
+                    elif col_name == 'Stock':
+                        stock_total = row.get('Stock Total', 0)
+                        cell_fmt = QTextTableCellFormat()
+                        
+                        if stock_total == 0:
+                            cell_fmt.setBackground(QColor(255, 220, 220))  # Vermelho claro
+                        elif stock_total < 10:
+                            cell_fmt.setBackground(QColor(255, 255, 200))  # Amarelo claro
+                        else:
+                            cell_fmt.setBackground(QColor(220, 255, 220))  # Verde claro
+                        
+                        cell.setFormat(cell_fmt)
 
                     cur.insertText(text, normal_fmt)
 
-            # Rodapé
+            # Rodapé com legenda das abreviações
             cursor.movePosition(QTextCursor.End)
             cursor.insertBlock()
-            footer = QTextCharFormat()
-            footer.setFontPointSize(7)
-            footer.setFontItalic(True)
-            footer.setForeground(QColor("gray"))
-            cursor.setCharFormat(footer)
-            cursor.insertText(f"Análise de tendências • {len(self.df_filtered):,} artigos comparados")
+            
+            # Legenda das colunas
+            legend_fmt = QTextCharFormat()
+            legend_fmt.setFontPointSize(6)
+            legend_fmt.setFontItalic(True)
+            legend_fmt.setForeground(QColor("gray"))
+            cursor.setCharFormat(legend_fmt)
+            
+            legend_text = (
+                "Legenda: Sup.Pack = Sup.Pack Size | Flow = Flow-type | GLP = GLP | "
+                "Stock = Stock Total (Stock + Stock In Transit + Stock Expected + Stock On Order)"
+            )
+            cursor.insertText(legend_text)
+            
+            cursor.insertBlock()
+            
+            # Rodapé principal
+            footer_fmt = QTextCharFormat()
+            footer_fmt.setFontPointSize(7)
+            footer_fmt.setFontItalic(True)
+            footer_fmt.setForeground(QColor("gray"))
+            cursor.setCharFormat(footer_fmt)
+            
+            footer_text = f"Análise de tendências • {len(self.df_filtered):,} artigos comparados • "
+            if self.check_mostrar_todos.isChecked():
+                footer_text += "Mostrando todos os artigos"
+            else:
+                footer_text += "Mostrando top 100 artigos"
+            
+            cursor.insertText(footer_text)
 
             # Exportar
             doc.print_(printer)
@@ -832,11 +1030,14 @@ class TendenciasDialog(QDialog):
                 self, "Sucesso",
                 f"PDF exportado com sucesso!\n\n"
                 f"→ {len(self.df_filtered):,} artigos exportados\n"
-                f"→ Guardado em: {os.path.basename(file_path)}"
+                f"→ Guardado em: {os.path.basename(file_path)}\n"
+                f"→ Inclui todas as colunas: Stock Total, Sup.Pack Size, Flow-type, GLP"
             )
 
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao exportar PDF:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def exportar_excel(self):
         if self.df_filtered is None or self.df_filtered.empty:
@@ -855,17 +1056,32 @@ class TendenciasDialog(QDialog):
                 self.progress_bar.setVisible(True)
                 self.progress_bar.setValue(50)
                 
-                # Criar DataFrame para exportação
-                df_export = self.df_filtered[[
-                    'Sku', 'Description', 'Unit Sales_P1', 'Unit Sales_P2', 
-                    'Sales Value_P1', 'Sales Value_P2', '% Crescimento', 'Secção'
-                ]].copy()
+                # Criar DataFrame para exportação com todas as colunas
+                colunas_export = [
+                    'Sku', 'Description', 'Stock Total', 'Unit Sales_P1', 'Unit Sales_P2',
+                    'Sales Value_P1', 'Sales Value_P2', '% Crescimento', 'Secção',
+                    'Sup.Pack Size', 'Flow-type', 'GLP'
+                ]
+                
+                # Filtrar apenas colunas que existem no DataFrame
+                colunas_disponiveis = [col for col in colunas_export if col in self.df_filtered.columns]
+                df_export = self.df_filtered[colunas_disponiveis].copy()
                 
                 # Renomear colunas para melhor legibilidade
-                df_export.columns = [
-                    'Sku', 'Description', 'Unit Sales Período 1', 'Unit Sales Período 2',
-                    'Sales Value Período 1', 'Sales Value Período 2', '% Crescimento', 'Secção'
-                ]
+                rename_map = {
+                    'Unit Sales_P1': 'Unit Sales Período 1',
+                    'Unit Sales_P2': 'Unit Sales Período 2',
+                    'Sales Value_P1': 'Sales Value Período 1',
+                    'Sales Value_P2': 'Sales Value Período 2',
+                    '% Crescimento': '% Crescimento',
+                    'Secção': 'Secção',
+                    'Sup.Pack Size': 'Sup.Pack Size',
+                    'Flow-type': 'Flow-type',
+                    'GLP': 'GLP',
+                    'Stock Total': 'Stock Total'
+                }
+                
+                df_export = df_export.rename(columns={col: rename_map.get(col, col) for col in df_export.columns})
                 
                 # Adicionar coluna de tendência
                 def classificar_tendencia(percent):
@@ -883,6 +1099,17 @@ class TendenciasDialog(QDialog):
                         return "QUEDA SIGNIFICATIVA"
                 
                 df_export['Tendência'] = df_export['% Crescimento'].apply(classificar_tendencia)
+                
+                # Reordenar colunas
+                colunas_finais = [
+                    'Sku', 'Description', 'Stock Total', 'Unit Sales Período 1', 'Unit Sales Período 2',
+                    'Sales Value Período 1', 'Sales Value Período 2', '% Crescimento', 'Tendência',
+                    'Secção', 'Sup.Pack Size', 'Flow-type', 'GLP'
+                ]
+                
+                # Filtrar apenas colunas que existem
+                colunas_finais = [col for col in colunas_finais if col in df_export.columns]
+                df_export = df_export[colunas_finais]
                 
                 # Exportar para Excel
                 with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
@@ -917,6 +1144,8 @@ class TendenciasDialog(QDialog):
                 
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao exportar: {str(e)}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.progress_bar.setVisible(False)
 

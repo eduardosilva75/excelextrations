@@ -316,12 +316,12 @@ class ArtigosUnicosDialog(QDialog):
                     self.calcular_percentual_vendas(df)
                     
                 else:
-                    # Ficheiro de Comparação: apenas precisa do SKU
-                    if 'Sku' not in df.columns:
+                    # Ficheiro de Comparação: apenas precisa do Artigo
+                    if 'Artigo' not in df.columns:
                         QMessageBox.critical(
                             self, 
                             "Erro", 
-                            f"Coluna 'Sku' não encontrada no ficheiro de Comparação.\n\nColunas encontradas: {', '.join(df.columns)}"
+                            f"Coluna 'Artigo' não encontrada no ficheiro de Comparação.\n\nColunas encontradas: {', '.join(df.columns)}"
                         )
                         self.progress_bar.setVisible(False)
                         return
@@ -440,7 +440,7 @@ class ArtigosUnicosDialog(QDialog):
             
             # Obter SKUs de ambos os ficheiros
             skus_principal = set(self.df_principal['Sku'].unique())
-            skus_comparacao = set(self.df_comparacao['Sku'].unique())
+            skus_comparacao = set(self.df_comparacao['Artigo'].unique())
             
             self.progress_bar.setValue(30)
             
