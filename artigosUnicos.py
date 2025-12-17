@@ -28,6 +28,7 @@ from PyQt5.QtGui import (
 from PyQt5.QtCore import Qt, QMarginsF
 from PyQt5.QtGui import QTextFrameFormat
 from datetime import datetime, timedelta
+from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
 
 class ArtigosUnicosDialog(QDialog):
     def __init__(self):
@@ -36,8 +37,15 @@ class ArtigosUnicosDialog(QDialog):
         self.setGeometry(100, 100, 1400, 800)
         self.df_unicos = None
         self.df_filtered = None
+        self.df_principal = None  # Já tens esta
+        self.df_comparacao = None  # Já tens esta
         self.ordenacao_atual = 'Unit Sales'  # Ordenação padrão
         self.ordem_decrescente = True  # Ordem padrão decrescente
+        
+        # VARIÁVEIS NOVAS PARA ARMAZENAR NOMES DOS FICHEIROS
+        self.ficheiro_principal_nome = ""
+        self.ficheiro_comparacao_nome = ""
+        
         self.initUI()
 
     def initUI(self):
@@ -197,6 +205,7 @@ class ArtigosUnicosDialog(QDialog):
         self.btn_exportar_excel.setEnabled(False)
         buttons_layout.addWidget(self.btn_exportar_excel)
 
+        # Grupo de botões PDF (Exportar e Imprimir)
         self.btn_exportar_pdf = QPushButton("📄 Exportar para PDF")
         self.btn_exportar_pdf.setFont(QFont("Arial", 12))
         self.btn_exportar_pdf.setMinimumHeight(40)
@@ -219,6 +228,30 @@ class ArtigosUnicosDialog(QDialog):
         self.btn_exportar_pdf.clicked.connect(self.exportar_pdf)
         self.btn_exportar_pdf.setEnabled(False)
         buttons_layout.addWidget(self.btn_exportar_pdf)
+
+        # BOTÃO NOVO - Imprimir PDF
+        self.btn_imprimir_pdf = QPushButton("🖨️ Imprimir PDF")
+        self.btn_imprimir_pdf.setFont(QFont("Arial", 12))
+        self.btn_imprimir_pdf.setMinimumHeight(40)
+        self.btn_imprimir_pdf.setStyleSheet("""
+            QPushButton {
+                background-color: #9C27B0;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #7B1FA2;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        self.btn_imprimir_pdf.clicked.connect(self.imprimir_pdf_direto)
+        self.btn_imprimir_pdf.setEnabled(False)
+        buttons_layout.addWidget(self.btn_imprimir_pdf)
 
         self.btn_limpar = QPushButton("🗑️ Limpar")
         self.btn_limpar.setFont(QFont("Arial", 12))
@@ -276,6 +309,14 @@ class ArtigosUnicosDialog(QDialog):
             )
             
             if file_path:
+                # ARMAZENAR O NOME DO FICHEIRO
+                file_name = os.path.basename(file_path)
+                
+                if tipo == 1:
+                    self.ficheiro_principal_nome = file_name
+                else:
+                    self.ficheiro_comparacao_nome = file_name
+                
                 self.progress_bar.setVisible(True)
                 self.progress_bar.setValue(0)
                 
@@ -315,6 +356,10 @@ class ArtigosUnicosDialog(QDialog):
                     # Calcular %Vendas
                     self.calcular_percentual_vendas(df)
                     
+                    # Armazenar como df_principal (que já usas no código)
+                    self.df_principal = df
+                    self.label_file1.setText(file_name)
+                    
                 else:
                     # Ficheiro de Comparação: apenas precisa do Artigo
                     if 'Artigo' not in df.columns:
@@ -325,14 +370,10 @@ class ArtigosUnicosDialog(QDialog):
                         )
                         self.progress_bar.setVisible(False)
                         return
-                
-                # Armazenar o DataFrame conforme o tipo
-                if tipo == 1:
-                    self.df_principal = df
-                    self.label_file1.setText(os.path.basename(file_path))
-                else:
+                    
+                    # Armazenar como df_comparacao (que já usas no código)
                     self.df_comparacao = df
-                    self.label_file2.setText(os.path.basename(file_path))
+                    self.label_file2.setText(file_name)
                 
                 self.progress_bar.setValue(100)
                 
@@ -343,7 +384,9 @@ class ArtigosUnicosDialog(QDialog):
                 QMessageBox.information(
                     self, 
                     "Sucesso", 
-                    f"Ficheiro {'Principal' if tipo == 1 else 'de Comparação'} carregado com sucesso!\n{len(df)} artigos encontrados."
+                    f"Ficheiro {'Principal' if tipo == 1 else 'de Comparação'} carregado com sucesso!\n"
+                    f"Nome: {file_name}\n"
+                    f"{len(df)} artigos encontrados."
                 )
                 
         except Exception as e:
@@ -478,6 +521,7 @@ class ArtigosUnicosDialog(QDialog):
             # Atualizar interface
             self.btn_exportar_excel.setEnabled(True)
             self.btn_exportar_pdf.setEnabled(True)
+            self.btn_imprimir_pdf.setEnabled(True)  # Adiciona esta linha
             self.filtrar_por_seccao()
             
             QMessageBox.information(
@@ -572,12 +616,12 @@ class ArtigosUnicosDialog(QDialog):
             return
         
         try:
-            # Configurar tabela com 10 colunas (igual ao hitParade.py)
+            # Configurar tabela com 10 colunas (mantendo 10 colunas no total)
             self.table.setRowCount(len(self.df_filtered))
             self.table.setColumnCount(10)
             self.table.setHorizontalHeaderLabels([
-                'Sku', 'Description', 'EAN', 'Unit Sales', 'Sales Value', 'Stock', 
-                '%Vendas', 'Ultima Recepcao', 'Flow-type', 'Status'
+                'Sku', 'Description', 'PVP Permanente', 'PVPR', 'Unit Sales', 'Sales Value', 'Stock', 
+                '%Vendas', 'Ultima Recepcao', 'Flow-type'
             ])
             
             # Calcular valores para o gradiente de cores da Unit Sales
@@ -598,11 +642,19 @@ class ArtigosUnicosDialog(QDialog):
                 item_desc.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 self.table.setItem(row_idx, 1, item_desc)
                 
-                # EAN (se existir na coluna)
-                ean_value = str(row['EAN']) if 'EAN' in row and pd.notna(row['EAN']) else "N/A"
-                item_ean = QTableWidgetItem(ean_value)
-                item_ean.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 2, item_ean)
+                # PVP Permanente (substitui o EAN)
+                # Assumindo que a coluna existe no DataFrame, ajuste conforme necessário
+                pvp_permanente = str(row['PVP Permanente']) if 'PVP Permanente' in row and pd.notna(row['PVP Permanente']) else "N/A"
+                item_pvp_permanente = QTableWidgetItem(pvp_permanente)
+                item_pvp_permanente.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.table.setItem(row_idx, 2, item_pvp_permanente)
+                
+                # PVPR
+                # Assumindo que a coluna existe no DataFrame, ajuste conforme necessário
+                pvpr = str(row['PVPR']) if 'PVPR' in row and pd.notna(row['PVPR']) else "N/A"
+                item_pvpr = QTableWidgetItem(pvpr)
+                item_pvpr.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.table.setItem(row_idx, 3, item_pvpr)
                 
                 # Unit Sales com gradiente de cores
                 unit_sales_value = row['Unit Sales'] if pd.notna(row['Unit Sales']) else 0
@@ -626,19 +678,19 @@ class ArtigosUnicosDialog(QDialog):
                     item_unit_sales.setBackground(QColor(red, green, blue))
                     item_unit_sales.setForeground(QColor(0, 0, 0))  # Texto preto para contraste
                 
-                self.table.setItem(row_idx, 3, item_unit_sales)
+                self.table.setItem(row_idx, 4, item_unit_sales)  # Agora na coluna 4
                 
                 # Sales Value
                 sales_value = row['Sales Value'] if pd.notna(row['Sales Value']) else 0
                 item_sales_value = QTableWidgetItem(f"€ {sales_value:,.2f}")
                 item_sales_value.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 4, item_sales_value)
+                self.table.setItem(row_idx, 5, item_sales_value)  # Agora na coluna 5
                 
                 # Stock
                 stock_value = row['Stock'] if pd.notna(row['Stock']) else 0
                 item_stock = QTableWidgetItem(f"{stock_value:,.0f}")
                 item_stock.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 5, item_stock)
+                self.table.setItem(row_idx, 6, item_stock)  # Agora na coluna 6
                 
                 # %Vendas
                 percentual = row.get('%Vendas', 0) if pd.notna(row.get('%Vendas', 0)) else 0
@@ -648,38 +700,34 @@ class ArtigosUnicosDialog(QDialog):
                     percent_text = f"{percentual:.1f}%"
                 item_percent = QTableWidgetItem(percent_text)
                 item_percent.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 6, item_percent)
+                self.table.setItem(row_idx, 7, item_percent)  # Agora na coluna 7
                 
                 # Ultima Recepcao - já formatada sem hora
                 ultima_recepcao = str(row.get('Ultima Recepcao', 'N/A')) if 'Ultima Recepcao' in row and pd.notna(row.get('Ultima Recepcao')) else "N/A"
                 item_recepcao = QTableWidgetItem(ultima_recepcao)
                 item_recepcao.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 7, item_recepcao)
+                self.table.setItem(row_idx, 8, item_recepcao)  # Agora na coluna 8
                 
                 # Flow-type
                 flow_type = str(row.get('Flow-type', 'N/A')) if 'Flow-type' in row and pd.notna(row.get('Flow-type')) else "N/A"
                 item_flow = QTableWidgetItem(flow_type)
                 item_flow.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 8, item_flow)
+                self.table.setItem(row_idx, 9, item_flow)  # Agora na coluna 9
                 
-                # Status
-                status = str(row.get('Status', 'N/A')) if 'Status' in row and pd.notna(row.get('Status')) else "N/A"
-                item_status = QTableWidgetItem(status)
-                item_status.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 9, item_status)
+                # Status foi removido para manter 10 colunas
             
             # Ajustar tamanho das colunas
             header = self.table.horizontalHeader()
             header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Sku
             header.setSectionResizeMode(1, QHeaderView.Stretch)          # Description
-            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # EAN
-            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Unit Sales
-            header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # Sales Value
-            header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # Stock
-            header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # %Vendas
-            header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # Ultima Recepcao
-            header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # Flow-type
-            header.setSectionResizeMode(9, QHeaderView.ResizeToContents)  # Status
+            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # PVP Permanente
+            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # PVPR
+            header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # Unit Sales
+            header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # Sales Value
+            header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # Stock
+            header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # %Vendas
+            header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # Ultima Recepcao
+            header.setSectionResizeMode(9, QHeaderView.ResizeToContents)  # Flow-type
             
             # Atualizar contador
             self.label_contador.setText(f"Total de artigos únicos: {len(self.df_filtered):,}")
@@ -735,25 +783,25 @@ class ArtigosUnicosDialog(QDialog):
                 f"Gerado em: {pd.Timestamp.now():%d/%m/%Y %H:%M}\n\n"
             cursor.insertText(info)
 
-            # Cabeçalhos (Status → St)
+            # Cabeçalhos atualizados (sem EAN, com PVP Permanente e PVPR)
             headers = [
-                'Sku', 'Description', 'EAN', 'Unit Sales', 'Sales Value',
-                'Stock', '%Vendas', 'Ultima Recepcao', 'Flow-type', 'S'
+                'Sku', 'Description', 'PVP Perm.', 'PVPR', 'Unit Sales', 
+                'Sales Value', 'Stock', '%Vendas', 'Ultima Recepcao', 'Flow-type'
             ]
 
-            # Larguras ajustadas
+            # Larguras ajustadas para as novas colunas
             larguras_percentagem = [
                 8,   # Sku
-                26,  # Description
-                11,  # EAN
-                9,   # Unit Sales
+                24,  # Description (reduzida de 26 para 24)
+                9,   # PVP Perm. (nova coluna)
+                8,   # PVPR (nova coluna)
+                8,   # Unit Sales (reduzida de 9 para 8)
                 9,   # Sales Value
                 6,   # Stock
-                8,   # %Vendas
+                7,   # %Vendas (reduzida de 8 para 7)
                 10,  # Ultima Recepcao
-                9,   # Flow-type
-                4    # St
-            ]  # soma = 100%
+                9    # Flow-type (reduzida de 9 para 9)
+            ]  # soma = 100% (8+24+9+8+8+9+6+7+10+9 = 98, ajustar se necessário)
 
             # Formato da tabela
             table_fmt = QTextTableFormat()
@@ -801,9 +849,11 @@ class ArtigosUnicosDialog(QDialog):
                     cell = table.cellAt(row_idx, col_idx)
                     cur = cell.firstCursorPosition()
 
-                    # Ajustar nome da coluna ao escrever os dados
-                    if col_name == 'S':
-                        value = row.get('Status', '')
+                    # Mapeamento dos nomes das colunas para os nomes no DataFrame
+                    if col_name == 'PVP Perm.':
+                        value = row.get('PVP Permanente', '')
+                    elif col_name == 'PVPR':
+                        value = row.get('PVPR', '')
                     else:
                         value = row.get(col_name, '')
 
@@ -815,8 +865,15 @@ class ArtigosUnicosDialog(QDialog):
                             text = desc if len(desc) <= 45 else desc[:42] + "..."
                         elif col_name in ["Unit Sales", "Stock"]:
                             text = f"{int(value):,}" if value else "0"
-                        elif col_name == "Sales Value":
-                            text = f"€{float(value):,.0f}" if value else "€0"
+                        elif col_name in ["Sales Value", "PVP Perm.", "PVPR"]:
+                            # Formatar como moeda para colunas de preço
+                            try:
+                                if value:
+                                    text = f"€{float(value):,.2f}"
+                                else:
+                                    text = "€0.00"
+                            except:
+                                text = str(value)
                         elif col_name == "%Vendas":
                             text = "N/A" if value == 99999 else f"{value:.1f}%"
                         elif col_name == "Ultima Recepcao":
@@ -824,7 +881,7 @@ class ArtigosUnicosDialog(QDialog):
                         else:
                             text = str(value)
 
-                    if col_name == "Unit Sales":
+                    if col_name == "Unit Sales" or col_name == "Stock":
                         cur.insertText(text, bold_fmt)
                     else:
                         cur.insertText(text, normal_fmt)
@@ -915,11 +972,216 @@ class ArtigosUnicosDialog(QDialog):
         finally:
             self.progress_bar.setVisible(False)
 
+    def imprimir_pdf_direto(self):
+        """
+        Imprime diretamente o PDF sem pedir para salvar primeiro
+        """
+        if self.df_filtered is None or self.df_filtered.empty:
+            QMessageBox.warning(self, "Aviso", "Não existem dados para imprimir.")
+            return
+
+        try:
+            # Diálogo de impressora
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            
+            # Configurar impressora (formato vertical padrão)
+            printer_dialog = QPrintDialog(printer, self)
+            if printer_dialog.exec() != QPrintDialog.Accepted:
+                return  # Usuário cancelou
+
+            # Criar documento PDF
+            doc = QTextDocument()
+            cursor = QTextCursor(doc)
+            doc.setDefaultFont(QFont("Arial", 8))
+
+            # Título e info
+            title_fmt = QTextCharFormat()
+            title_fmt.setFont(QFont("Arial", 16, QFont.Bold))
+            block_fmt = QTextBlockFormat()
+            block_fmt.setAlignment(Qt.AlignCenter)
+            cursor.insertBlock(block_fmt)
+            cursor.setCharFormat(title_fmt)
+
+            # Calcular a data de ontem
+            from datetime import datetime, timedelta
+            data_ontem = datetime.now() - timedelta(days=1)
+            data_ontem_formatada = data_ontem.strftime("%d-%m-%Y")
+
+            # Título com nome do ficheiro principal (se disponível)
+            titulo = f"Não Vendas - {data_ontem_formatada}"
+            if hasattr(self, 'ficheiro_principal_nome') and self.ficheiro_principal_nome:
+                # Remove a extensão do arquivo para ficar mais limpo
+                nome_sem_extensao = os.path.splitext(self.ficheiro_principal_nome)[0]
+                titulo = f"Não Vendas - {nome_sem_extensao} - {data_ontem_formatada}"
+            
+            cursor.insertText(f"{titulo}\n\n")                        
+
+            # Informações adicionais
+            info_parts = []
+            info_parts.append(f"Secção: {self.combo_seccao.currentText()}")
+            info_parts.append(f"Total artigos únicos: {len(self.df_filtered):,}")
+            
+            # Adicionar nome do ficheiro principal se disponível
+            #if hasattr(self, 'ficheiro_principal_nome') and self.ficheiro_principal_nome:
+             #   info_parts.append(f"Ficheiro: {self.ficheiro_principal_nome}")
+            
+            info_parts.append(f"Gerado em: {pd.Timestamp.now():%d/%m/%Y %H:%M}")
+            
+            info = " | ".join(info_parts) + "\n\n"
+            cursor.insertText(info)
+
+            # Cabeçalhos atualizados
+            headers = [
+                'Sku', 'Description', 'PVP Perm.', 'PVPR', 'Unit Sales', 
+                'Sales Value', 'Stock', '%Vendas', 'Ultima Recepcao', 'Flow-type'
+            ]
+
+            # Larguras ajustadas para formato vertical (mais largas)
+            larguras_percentagem = [
+                8,   # Sku
+                26,  # Description
+                9,   # PVP Perm.
+                8,   # PVPR
+                8,   # Unit Sales
+                9,   # Sales Value
+                6,   # Stock
+                7,   # %Vendas
+                10,  # Ultima Recepcao
+                9    # Flow-type
+            ]
+
+            # Formato da tabela
+            table_fmt = QTextTableFormat()
+            table_fmt.setWidth(QTextLength(QTextLength.PercentageLength, 100))
+            table_fmt.setCellPadding(5)
+            table_fmt.setCellSpacing(0)
+            table_fmt.setBorder(0.5)
+            table_fmt.setBorderStyle(QTextFrameFormat.BorderStyle_Solid)
+
+            constraints = [QTextLength(QTextLength.PercentageLength, w) for w in larguras_percentagem]
+            table_fmt.setColumnWidthConstraints(constraints)
+
+            table = cursor.insertTable(len(self.df_filtered) + 1, len(headers), table_fmt)
+
+            # Cabeçalho
+            header_cell_fmt = QTextTableCellFormat()
+            header_cell_fmt.setBackground(QColor("#d0d0d0"))
+
+            header_char_fmt = QTextCharFormat()
+            header_char_fmt.setFontWeight(QFont.Bold)
+            header_char_fmt.setFontPointSize(9)
+
+            unit_sales_header_fmt = QTextCharFormat(header_char_fmt)
+            unit_sales_header_fmt.setFontPointSize(10)
+
+            for col, texto in enumerate(headers):
+                cell = table.cellAt(0, col)
+                cell.setFormat(header_cell_fmt)
+                cur = cell.firstCursorPosition()
+                if texto == "Unit Sales":
+                    cur.insertText(texto, unit_sales_header_fmt)
+                else:
+                    cur.insertText(texto, header_char_fmt)
+
+            # Dados
+            normal_fmt = QTextCharFormat()
+            normal_fmt.setFontPointSize(8)
+
+            bold_fmt = QTextCharFormat(normal_fmt)
+            bold_fmt.setFontWeight(QFont.Bold)
+            bold_fmt.setFontPointSize(9)
+
+            for row_idx, (_, row) in enumerate(self.df_filtered.iterrows(), start=1):
+                for col_idx, col_name in enumerate(headers):
+                    cell = table.cellAt(row_idx, col_idx)
+                    cur = cell.firstCursorPosition()
+
+                    # Mapeamento dos nomes das colunas
+                    if col_name == 'PVP Perm.':
+                        value = row.get('PVP Permanente', '')
+                    elif col_name == 'PVPR':
+                        value = row.get('PVPR', '')
+                    else:
+                        value = row.get(col_name, '')
+
+                    if pd.isna(value):
+                        text = "N/A"
+                    else:
+                        if col_name == "Description":
+                            desc = str(value)
+                            text = desc if len(desc) <= 45 else desc[:42] + "..."
+                        elif col_name in ["Unit Sales", "Stock"]:
+                            text = f"{int(value):,}" if value else "0"
+                        elif col_name in ["Sales Value", "PVP Perm.", "PVPR"]:
+                            try:
+                                if value:
+                                    text = f"€{float(value):,.2f}"
+                                else:
+                                    text = "€0.00"
+                            except:
+                                text = str(value)
+                        elif col_name == "%Vendas":
+                            text = "N/A" if value == 99999 else f"{value:.1f}%"
+                        elif col_name == "Ultima Recepcao":
+                            text = str(value)[:10] if pd.notna(value) else "N/A"
+                        else:
+                            text = str(value)
+
+                    # Aplicar bold tanto para Unit Sales como para Stock
+                    if col_name in ["Unit Sales", "Stock"]:
+                        cur.insertText(text, bold_fmt)
+                    else:
+                        cur.insertText(text, normal_fmt)
+
+            # Rodapé
+            cursor.movePosition(QTextCursor.End)
+            cursor.insertBlock()
+            footer = QTextCharFormat()
+            footer.setFontPointSize(7)
+            footer.setFontItalic(True)
+            footer.setForeground(QColor("gray"))
+            cursor.setCharFormat(footer)
+            
+            # Rodapé com mais informações
+            rodape_parts = [f"Artigos únicos do ficheiro principal com stock > 0"]
+            rodape_parts.append(f"{len(self.df_filtered):,} artigos")
+            
+            if hasattr(self, 'ficheiro_principal_nome') and self.ficheiro_principal_nome:
+                rodape_parts.append(f"Fonte: {self.ficheiro_principal_nome}")
+            
+            if hasattr(self, 'ficheiro_comparacao_nome') and self.ficheiro_comparacao_nome:
+                rodape_parts.append(f"vs {self.ficheiro_comparacao_nome}")
+            
+            rodape = " • ".join(rodape_parts)
+            cursor.insertText(rodape)
+
+            # Imprimir
+            doc.print_(printer)
+            
+            # Mensagem de sucesso
+            msg_sucesso = f"PDF enviado para impressão com sucesso!\n\n"
+            msg_sucesso += f"→ {len(self.df_filtered):,} artigos únicos impressos\n"
+            msg_sucesso += f"→ Formato: Vertical (A4 Portrait)"
+            
+            if hasattr(self, 'ficheiro_principal_nome') and self.ficheiro_principal_nome:
+                msg_sucesso += f"\n→ Ficheiro: {self.ficheiro_principal_nome}"
+            
+            QMessageBox.information(self, "Sucesso", msg_sucesso)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Erro", f"Erro ao imprimir PDF:\n{str(e)}")
+
     def limpar_tudo(self):
         self.df_unicos = None
         self.df_filtered = None
         self.df_principal = None
         self.df_comparacao = None
+        
+        # LIMPAR NOMES DOS FICHEIROS
+        self.ficheiro_principal_nome = ""
+        self.ficheiro_comparacao_nome = ""
+        
         self.table.setRowCount(0)
         self.label_file1.setText("Nenhum ficheiro carregado")
         self.label_file2.setText("Nenhum ficheiro carregado")
@@ -929,6 +1191,10 @@ class ArtigosUnicosDialog(QDialog):
         self.label_contador.setText("Total de artigos únicos: 0")
         self.btn_exportar_excel.setEnabled(False)
         self.btn_exportar_pdf.setEnabled(False)
+        # Se tiveres o botão de imprimir, adiciona também:
+        if hasattr(self, 'btn_imprimir_pdf'):
+            self.btn_imprimir_pdf.setEnabled(False)
+
 
 def mostrar_artigos_unicos():
     dialog = ArtigosUnicosDialog()

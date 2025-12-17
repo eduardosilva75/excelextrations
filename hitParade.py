@@ -74,6 +74,22 @@ class HitParadeDialog(QDialog):
         upload_layout.addStretch()
         layout.addLayout(upload_layout)
         
+        # NOVO: Área de configuração do cálculo
+        config_layout = QHBoxLayout()
+        
+        # Combobox para percentual de meta
+        config_layout.addWidget(QLabel("Meta Mínima (%):"))
+        
+        self.combo_percentual = QComboBox()
+        self.combo_percentual.setMinimumWidth(100)
+        self.combo_percentual.addItems(["10%", "15%", "20%", "25%", "30%", "35%", "40%", "50%"])
+        self.combo_percentual.setCurrentText("25%")  # Valor por defeito
+        self.combo_percentual.currentTextChanged.connect(self.atualizar_calculos)
+        config_layout.addWidget(self.combo_percentual)
+        
+        config_layout.addStretch()
+        layout.addLayout(config_layout)
+        
         # Filtros e ordenação
         filters_layout = QHBoxLayout()
 
@@ -228,6 +244,29 @@ class HitParadeDialog(QDialog):
         layout.addLayout(buttons_layout)
         
         self.setLayout(layout)
+
+    def atualizar_calculos(self):
+        """Atualiza os cálculos com o novo percentual"""
+        if self.df is None:
+            return
+        
+        try:
+            # Obter percentual da combobox (remove o % e converte)
+            percentual_texto = self.combo_percentual.currentText()
+            percentual = float(percentual_texto.replace('%', '')) / 100
+            
+            # Atualizar a coluna Pr.Cx com o novo percentual
+            self.calcular_previsao_caixas(percentual)
+            
+            # Se tiver filtro aplicado, atualizar também
+            if self.df_filtered is not None:
+                self.filtrar_por_seccao()
+                
+            QMessageBox.information(self, "Sucesso", 
+                                f"Cálculos atualizados com meta de {percentual:.0%}")
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Erro", f"Erro ao atualizar cálculos: {str(e)}")
 
     def calcular_percentual_vendas(self):
         """Calcula a percentagem de vendas (Stock Total em relação a Unit Sales) e a previsão de caixas"""
@@ -385,6 +424,36 @@ class HitParadeDialog(QDialog):
             traceback.print_exc()
             self.df['%Vendas'] = 0
             self.df['Pr.Cx'] = 0
+
+    def calcular_previsao_caixas(self, percentual_meta=0.25):
+        """Calcula a previsão de caixas com percentual configurável"""
+        try:
+            import numpy as np
+            
+            # Cálculo da meta mínima
+            meta_minima = percentual_meta * self.df['Unit Sales']
+            
+            # Necessidade = Meta - Stock Total
+            necessidade = meta_minima - self.df['Stock Total']
+            
+            # Garantir valores não negativos
+            necessidade_total = necessidade.clip(lower=0)
+            
+            # Calcular caixas (evitar divisão por zero)
+            sup_pack_nonzero = self.df['Sup.Pack Size'].copy()
+            sup_pack_nonzero[sup_pack_nonzero == 0] = 1.0
+            caixas_float = necessidade_total / sup_pack_nonzero
+            
+            # Arredondar para CIMA e converter para inteiro
+            self.df['Pr.Cx'] = np.ceil(caixas_float).astype(int)
+            
+            # Para Unit Sales = 0, Pr.Cx = 0
+            self.df.loc[self.df['Unit Sales'] == 0, 'Pr.Cx'] = 0
+            
+            print(f"Cálculo atualizado com percentual: {percentual_meta:.0%}")
+            
+        except Exception as e:
+            print(f"Erro ao calcular previsão de caixas: {e}")
     
     def carregar_ficheiro(self):
         try:

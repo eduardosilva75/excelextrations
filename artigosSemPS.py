@@ -1,4 +1,32 @@
 import os
+import sys
+import multiprocessing
+
+# ✅ CRÍTICO: Configuração para PyInstaller
+# Deteta se está a correr como executável PyInstaller
+if getattr(sys, 'frozen', False):
+    # Executável PyInstaller
+    RUNNING_AS_EXECUTABLE = True
+    # No PyInstaller, sempre usar n_jobs=1 para evitar problemas
+    ML_N_JOBS = 1
+    print("[ML CONFIG] Executável PyInstaller detectado - n_jobs: 1")
+else:
+    # Python normal
+    RUNNING_AS_EXECUTABLE = False
+    if sys.platform.startswith('win'):
+        ML_N_JOBS = 1
+    else:
+        ML_N_JOBS = -1
+    print(f"[ML CONFIG] Python normal - Sistema: {sys.platform}, n_jobs: {ML_N_JOBS}")
+
+# Configuração multiprocessing (importante para PyInstaller)
+if sys.platform.startswith('win') or RUNNING_AS_EXECUTABLE:
+    multiprocessing.freeze_support()
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass  # Já foi configurado
+    
 import pandas as pd
 import numpy as np
 
@@ -39,8 +67,6 @@ from PyQt5.QtGui import (
 from PyQt5.QtCore import Qt, QMarginsF
 from PyQt5.QtGui import QTextFrameFormat
 
-import multiprocessing
-import sys
 
 class ArtigosSemPSDialog(QDialog):
     def __init__(self):
@@ -302,37 +328,41 @@ class ArtigosSemPSDialog(QDialog):
         try:
             if 'Presentation Stock' not in self.df.columns:
                 QMessageBox.warning(self, "Aviso", "Coluna 'Presentation Stock' não encontrada.")
-                self.df['Sugestão Presentation Stock'] = 0
+                # CORREÇÃO: Atualizar nomes das colunas
+                self.df['Sugestão Presentation Stock (Regras)'] = 0
+                self.df['Sugestão Presentation Stock (ML)'] = 0
                 return
 
             df_com_ps = self.df[self.df['Presentation Stock'] > 0].copy()
+            
+            # Sempre calcula as regras primeiro
+            self.calcular_sugestao_ps_regras()
             
             if len(df_com_ps) >= 20:
                 resposta = QMessageBox.question(
                     self,
                     "Escolher Método",
                     f"Encontrados {len(df_com_ps)} artigos com PS > 0.\n\n"
-                    "Deseja usar Machine Learning (mais preciso) ou regras manuais?\n\n"
-                    "• 🤖 ML: Recomendado para dados suficientes\n"
-                    "• 📊 Regras: Mais conservador",
-                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                    "Deseja usar Machine Learning (mais preciso) para complementar as regras?\n\n"
+                    "• 🤖 ML: Recomendado para dados suficientes (calcula sugestões em ML)\n"
+                    "• ✋ Não: Mantém apenas as regras manuais",
+                    QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.Yes
                 )
                 
                 if resposta == QMessageBox.Yes:
                     self.calcular_sugestao_ps_ml()
                     return
-                elif resposta == QMessageBox.No:
-                    self.calcular_sugestao_ps_regras()
-                    return
                 else:
-                    return
+                    QMessageBox.information(self, "Concluído", "Sugestões calculadas usando regras manuais.")
             else:
-                self.calcular_sugestao_ps_regras()
+                QMessageBox.information(self, "Concluído", "Sugestões calculadas usando regras manuais.")
                 
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro ao calcular sugestões: {str(e)}")
-            self.df['Sugestão Presentation Stock'] = 0
+            # CORREÇÃO: Atualizar nomes das colunas
+            self.df['Sugestão Presentation Stock (Regras)'] = 0
+            self.df['Sugestão Presentation Stock (ML)'] = 0
 
     def calcular_sugestao_ps_ml(self):
         """Calcula sugestão de Presentation Stock usando Machine Learning"""
@@ -397,8 +427,8 @@ class ArtigosSemPSDialog(QDialog):
             previsoes = modelo.predict(X_pred)
             
             # Aplica previsões com constraints
-            df_prever['Sugestão Presentation Stock'] = np.round(previsoes).astype(int)
-            df_prever['Sugestão Presentation Stock'] = df_prever['Sugestão Presentation Stock'].clip(
+            df_prever['Sugestão Presentation Stock (ML)'] = np.round(previsoes).astype(int)
+            df_prever['Sugestão Presentation Stock (ML)'] = df_prever['Sugestão Presentation Stock (ML)'].clip(
                 lower=1, upper=200
             )
             
@@ -406,9 +436,12 @@ class ArtigosSemPSDialog(QDialog):
             if hasattr(self, 'aplicar_logica_pack_size'):
                 df_prever = self.aplicar_logica_pack_size(df_prever)
             
-            # Atualiza DataFrame principal
-            self.df.loc[df_prever.index, 'Sugestão Presentation Stock'] = df_prever['Sugestão Presentation Stock']
-            self.df.loc[self.df['Presentation Stock'] > 0, 'Sugestão Presentation Stock'] = 0
+            # Atualiza DataFrame principal com ML
+            self.df.loc[df_prever.index, 'Sugestão Presentation Stock (ML)'] = df_prever['Sugestão Presentation Stock (ML)']
+            self.df.loc[self.df['Presentation Stock'] > 0, 'Sugestão Presentation Stock (ML)'] = 0
+            
+            # Calcula também as regras manuais para comparação
+            self.calcular_sugestao_ps_regras()
             
             self.progress_bar.setValue(100)
             
@@ -594,7 +627,8 @@ class ArtigosSemPSDialog(QDialog):
         msg += f"Previsões geradas: {len(df_prever)} artigos\n\n"
         
         # Estatísticas das previsões
-        sugestoes = df_prever['Sugestão Presentation Stock']
+        # CORREÇÃO: Alterado o nome da coluna
+        sugestoes = df_prever['Sugestão Presentation Stock (ML)']
         msg += f"Sugestões geradas:\n"
         msg += f"  - Mínimo: {sugestoes.min()}\n"
         msg += f"  - Média: {sugestoes.mean():.1f}\n"
@@ -624,7 +658,7 @@ class ArtigosSemPSDialog(QDialog):
             self.df_com_ps = self.df[self.df['Presentation Stock'] > 0].copy()
             
             if self.df_com_ps.empty:
-                self.df['Sugestão Presentation Stock'] = 3
+                self.df['Sugestão Presentation Stock (Regras)'] = 3
                 return
 
             stats_por_seccao = self.df_com_ps.groupby('Secção').agg({
@@ -633,7 +667,7 @@ class ArtigosSemPSDialog(QDialog):
             }).round(2)
 
             artigos_sem_ps = self.df[self.df['Presentation Stock'] == 0].copy()
-            artigos_sem_ps['Sugestão Presentation Stock'] = 0
+            artigos_sem_ps['Sugestão Presentation Stock (Regras)'] = 0
 
             for idx, artigo in artigos_sem_ps.iterrows():
                 seccao = artigo['Secção']
@@ -676,18 +710,16 @@ class ArtigosSemPSDialog(QDialog):
                         sugestao = max(3, sugestao)
                     
                     sugestao_final = int(round(min(sugestao, 100)))  # Limite máximo
-                    artigos_sem_ps.at[idx, 'Sugestão Presentation Stock'] = max(3, sugestao_final)
+                    artigos_sem_ps.at[idx, 'Sugestão Presentation Stock (Regras)'] = max(3, sugestao_final)
                 else:
-                    artigos_sem_ps.at[idx, 'Sugestão Presentation Stock'] = 3
+                    artigos_sem_ps.at[idx, 'Sugestão Presentation Stock (Regras)'] = 3
 
-            self.df.loc[artigos_sem_ps.index, 'Sugestão Presentation Stock'] = artigos_sem_ps['Sugestão Presentation Stock']
-            self.df.loc[self.df['Presentation Stock'] > 0, 'Sugestão Presentation Stock'] = 0
-            
-            QMessageBox.information(self, "Concluído", "Sugestões calculadas usando regras manuais.")
+            self.df.loc[artigos_sem_ps.index, 'Sugestão Presentation Stock (Regras)'] = artigos_sem_ps['Sugestão Presentation Stock (Regras)']
+            self.df.loc[self.df['Presentation Stock'] > 0, 'Sugestão Presentation Stock (Regras)'] = 0
             
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Erro nas regras manuais: {str(e)}")
-            self.df['Sugestão Presentation Stock'] = 0
+            self.df['Sugestão Presentation Stock (Regras)'] = 0
 
     def carregar_ficheiro(self):
         try:
@@ -728,9 +760,11 @@ class ArtigosSemPSDialog(QDialog):
                     return
                 
                 self.df['Secção'] = self.df['Merc.Struct Code'].astype(str).str[2:4]
-                self.df['Sugestão Presentation Stock'] = 0
+                # CORREÇÃO: Criar as duas colunas de sugestão
+                self.df['Sugestão Presentation Stock (Regras)'] = 0
+                self.df['Sugestão Presentation Stock (ML)'] = 0
                 
-                self.calcular_sugestao_ps()
+                self.calcular_sugestao_ps()  # Este método agora vai calcular apenas as regras
                 
                 self.df_filtered = self.df[self.df['Presentation Stock'] == 0].copy()
                 self.df_filtered = self.df_filtered.sort_values(['Secção', 'Unit Sales'], ascending=[True, False])
@@ -832,10 +866,12 @@ class ArtigosSemPSDialog(QDialog):
     def atualizar_tabela(self, df):
         try:
             self.table.setRowCount(len(df))
-            self.table.setColumnCount(9)
+            self.table.setColumnCount(10)  # Alterado de 9 para 10
             self.table.setHorizontalHeaderLabels([
                 'Sku', 'Description', 'Sup.Pack Size', 'PVP Em Vigor', 'Stock', 
-                'Unit Sales', 'Flow-type', 'Secção', 'Sugestão Presentation Stock'
+                'Unit Sales', 'Flow-type', 'Secção', 
+                'Sugestão (Regras)',  # NOVA COLUNA
+                'Sugestão (ML)'       # NOVA COLUNA
             ])
             
             for row_idx, (_, row) in enumerate(df.iterrows()):
@@ -868,7 +904,7 @@ class ArtigosSemPSDialog(QDialog):
                 
                 if stock_value == 0:
                     item_stock.setBackground(QColor(255, 200, 200))
-                elif stock_value < (row.get('Sugestão Presentation Stock', 0) or 0):
+                elif stock_value < (row.get('Sugestão Presentation Stock (ML)', 0) or 0):
                     item_stock.setBackground(QColor(255, 255, 200))
                 
                 self.table.setItem(row_idx, 4, item_stock)
@@ -896,15 +932,31 @@ class ArtigosSemPSDialog(QDialog):
                 item_seccao.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
                 self.table.setItem(row_idx, 7, item_seccao)
                 
-                # Sugestão Presentation Stock
-                sugestao = row.get('Sugestão Presentation Stock', 0)
-                item_sugestao = QTableWidgetItem(f"{sugestao:,.0f}")
-                item_sugestao.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                # Sugestão (Regras) - COLUNA 8
+                sugestao_regras = row.get('Sugestão Presentation Stock (Regras)', 0)
+                item_sugestao_regras = QTableWidgetItem(f"{sugestao_regras:,.0f}")
+                item_sugestao_regras.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 
-                if sugestao > 10:
-                    item_sugestao.setBackground(QColor(200, 230, 255))
+                # Cor diferente para regras
+                if sugestao_regras > 10:
+                    item_sugestao_regras.setBackground(QColor(200, 255, 200))
+                else:
+                    item_sugestao_regras.setBackground(QColor(245, 245, 245))
                 
-                self.table.setItem(row_idx, 8, item_sugestao)
+                self.table.setItem(row_idx, 8, item_sugestao_regras)
+                
+                # Sugestão (ML) - COLUNA 9
+                sugestao_ml = row.get('Sugestão Presentation Stock (ML)', 0)
+                item_sugestao_ml = QTableWidgetItem(f"{sugestao_ml:,.0f}")
+                item_sugestao_ml.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                
+                # Cor diferente para ML
+                if sugestao_ml > 10:
+                    item_sugestao_ml.setBackground(QColor(200, 230, 255))
+                else:
+                    item_sugestao_ml.setBackground(QColor(245, 245, 245))
+                
+                self.table.setItem(row_idx, 9, item_sugestao_ml)
             
             header = self.table.horizontalHeader()
             header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -915,7 +967,8 @@ class ArtigosSemPSDialog(QDialog):
             header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
             header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
             header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(8, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # Regras
+            header.setSectionResizeMode(9, QHeaderView.ResizeToContents)  # ML
             
             self.label_contador.setText(f"Total de artigos sem Presentation Stock: {len(df):,}")
             
@@ -974,12 +1027,16 @@ class ArtigosSemPSDialog(QDialog):
                 f"Gerado em: {pd.Timestamp.now():%d/%m/%Y %H:%M}\n\n"
             cursor.insertText(info)
 
+            # ATUALIZADO: Agora com 10 colunas (2 para sugestões)
             headers = [
                 'Sku', 'Description', 'Pack', 'PVP', 'Stock', 
-                'Unit Sales', 'Flow', 'Sec', 'Sug. Presentation Stock'
+                'Unit Sales', 'Flow', 'Sec', 
+                'Sug. (Regras)',  # NOVA COLUNA
+                'Sug. (ML)'       # NOVA COLUNA
             ]
 
-            larguras_percentagem = [10, 30, 6, 8, 8, 9, 8, 6, 8]
+            # ATUALIZADO: Ajustar larguras para 10 colunas
+            larguras_percentagem = [8, 25, 5, 7, 7, 8, 7, 5, 8, 8]
 
             table_fmt = QTextTableFormat()
             table_fmt.setWidth(QTextLength(QTextLength.PercentageLength, 100))
@@ -991,6 +1048,7 @@ class ArtigosSemPSDialog(QDialog):
             constraints = [QTextLength(QTextLength.PercentageLength, w) for w in larguras_percentagem]
             table_fmt.setColumnWidthConstraints(constraints)
 
+            # ATUALIZADO: 10 colunas em vez de 9
             table = cursor.insertTable(len(df_export) + 1, len(headers), table_fmt)
 
             header_cell_fmt = QTextTableCellFormat()
@@ -1014,6 +1072,7 @@ class ArtigosSemPSDialog(QDialog):
                     cell = table.cellAt(row_idx, col_idx)
                     cur = cell.firstCursorPosition()
 
+                    # ATUALIZADO: Mapeamento das novas colunas
                     col_mapping = {
                         'Sku': 'Sku',
                         'Description': 'Description', 
@@ -1023,7 +1082,8 @@ class ArtigosSemPSDialog(QDialog):
                         'Unit Sales': 'Unit Sales',
                         'Flow': 'Flow-type',
                         'Sec': 'Secção',
-                        'Sug. Presentation Stock': 'Sugestão Presentation Stock'
+                        'Sug. (Regras)': 'Sugestão Presentation Stock (Regras)',  # NOVO
+                        'Sug. (ML)': 'Sugestão Presentation Stock (ML)'            # NOVO
                     }
                     
                     real_col = col_mapping[col_name]
@@ -1034,8 +1094,10 @@ class ArtigosSemPSDialog(QDialog):
                     else:
                         if real_col == "Description":
                             desc = str(value)
-                            text = desc if len(desc) <= 40 else desc[:37] + "..."
-                        elif real_col in ["Unit Sales", "Stock", "Sup.Pack Size", "Sugestão Presentation Stock"]:
+                            text = desc if len(desc) <= 30 else desc[:27] + "..."  # Reduzido para caber melhor
+                        elif real_col in ["Unit Sales", "Stock", "Sup.Pack Size", 
+                                        "Sugestão Presentation Stock (Regras)", 
+                                        "Sugestão Presentation Stock (ML)"]:
                             text = f"{int(value):,}" if value else "0"
                         elif real_col == "PVP Em Vigor":
                             text = f"€{float(value):,.2f}" if value else "€0"
@@ -1057,10 +1119,14 @@ class ArtigosSemPSDialog(QDialog):
 
             doc.print_(printer)
 
+            # ATUALIZADO: Mensagem informativa sobre as duas colunas
             QMessageBox.information(
                 self, "Sucesso",
                 f"PDF exportado com sucesso!\n\n"
                 f"→ {len(df_export):,} artigos exportados\n"
+                f"→ Inclui duas colunas de sugestão:\n"
+                f"   • Sug. (Regras): Cálculo por regras manuais\n"
+                f"   • Sug. (ML): Cálculo por Machine Learning\n"
                 f"→ Guardado em: {os.path.basename(file_path)}"
             )
 
@@ -1097,7 +1163,9 @@ class ArtigosSemPSDialog(QDialog):
                 
                 colunas_export = [
                     'Sku', 'Description', 'Sup.Pack Size', 'PVP Em Vigor', 'Stock', 
-                    'Unit Sales', 'Flow-type', 'Secção', 'Sugestão Presentation Stock'
+                    'Unit Sales', 'Flow-type', 'Secção', 
+                    'Sugestão Presentation Stock (Regras)',  # NOVO
+                    'Sugestão Presentation Stock (ML)'       # NOVO
                 ]
                 
                 colunas_disponiveis = [col for col in colunas_export if col in df_export.columns]
@@ -1141,20 +1209,36 @@ class ArtigosSemPSDialog(QDialog):
         self.df_filtered = None
         self.df_com_ps = None
         self.table.setRowCount(0)
+        self.table.setColumnCount(0)  # Limpa também as colunas
         self.label_file.setText("Nenhum ficheiro carregado")
+        
+        # Limpa combos
         self.combo_seccao.clear()
         self.combo_seccao.addItem("Todas as Secções")
+        
         self.combo_status.clear()
         self.combo_status.addItem("Todos os Status")
-        self.combo_stock.clear()  # NOVO
-        self.combo_stock.addItem("Todos")  # NOVO
-        self.combo_stock.addItem("Stock > 0")  # NOVO
-        self.combo_stock.addItem("Stock = 0")  # NOVO
         self.combo_status.setEnabled(True)
+        
+        self.combo_stock.clear()
+        self.combo_stock.addItem("Todos")
+        self.combo_stock.addItem("Stock > 0")
+        self.combo_stock.addItem("Stock = 0")
+        
+        # Atualiza contador
         self.label_contador.setText("Total de artigos sem Presentation Stock: 0")
+        
+        # Desabilita botões
         self.btn_exportar_excel.setEnabled(False)
         self.btn_exportar_pdf.setEnabled(False)
         self.btn_ml.setEnabled(False)
+        
+        # Reseta cabeçalhos da tabela (opcional - será recriado ao carregar novo ficheiro)
+        self.table.setHorizontalHeaderLabels([
+            'Sku', 'Description', 'Sup.Pack Size', 'PVP Em Vigor', 'Stock', 
+            'Unit Sales', 'Flow-type', 'Secção', 
+            'Sugestão (Regras)', 'Sugestão (ML)'
+        ])
 
 def mostrar_artigos_sem_ps():
     """Função auxiliar para abrir o dialog - segura para chamada externa"""
