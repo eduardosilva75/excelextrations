@@ -27,6 +27,7 @@ from PyQt5.QtGui import (
 
 from PyQt5.QtCore import Qt, QMarginsF
 from PyQt5.QtGui import QTextFrameFormat
+from PyQt5.QtGui import QIntValidator
 
 class VendasVsStocksDialog(QDialog):
     def __init__(self):
@@ -70,6 +71,19 @@ class VendasVsStocksDialog(QDialog):
         """)
         self.btn_file.clicked.connect(self.carregar_ficheiro)
         upload_layout.addWidget(self.btn_file)
+
+        # NOVO: Controle para dias de vendas
+        dias_layout = QHBoxLayout()
+        dias_layout.addWidget(QLabel("Período de vendas (dias):"))
+        self.input_dias = QLineEdit("30")  # Valor padrão: 30 dias
+        self.input_dias.setFixedWidth(60)
+        self.input_dias.setAlignment(Qt.AlignCenter)
+        self.input_dias.setValidator(QIntValidator(1, 365))  # Aceita apenas números inteiros
+        self.input_dias.textChanged.connect(self.atualizar_dias_stock)
+        dias_layout.addWidget(self.input_dias)
+        dias_layout.addWidget(QLabel("dias"))
+        dias_layout.addStretch()
+        layout.addLayout(dias_layout)       
         
         self.label_file = QLabel("Nenhum ficheiro carregado")
         self.label_file.setStyleSheet("color: #666; padding: 10px;")
@@ -88,6 +102,22 @@ class VendasVsStocksDialog(QDialog):
         self.combo_seccao.currentTextChanged.connect(self.filtrar_dados)
         filters_layout.addWidget(self.combo_seccao)
 
+        # NOVO: Filtro por Status
+        filters_layout.addWidget(QLabel("Status:"))
+        self.combo_status = QComboBox()
+        self.combo_status.setMinimumWidth(120)
+        self.combo_status.addItem("Todos Status")
+        self.combo_status.currentTextChanged.connect(self.filtrar_dados)
+        filters_layout.addWidget(self.combo_status)
+
+        # NOVO: Filtro por Categoria
+        filters_layout.addWidget(QLabel("Categoria:"))
+        self.combo_categoria = QComboBox()
+        self.combo_categoria.setMinimumWidth(120)
+        self.combo_categoria.addItem("Todas Categorias")
+        self.combo_categoria.currentTextChanged.connect(self.filtrar_dados)
+        filters_layout.addWidget(self.combo_categoria)
+
         # Checkbox mostrar todos
         self.check_mostrar_todos = QCheckBox("Mostrar todos os artigos")
         self.check_mostrar_todos.stateChanged.connect(self.filtrar_dados)
@@ -99,7 +129,7 @@ class VendasVsStocksDialog(QDialog):
         filters_layout.addWidget(QLabel("Ordenar por:"))
         self.combo_ordenacao = QComboBox()
         self.combo_ordenacao.addItems([
-            "Qty", "Stock", "%Stock/Vendas", "Margem %", "Vendas -Descontos"
+            "Artigo", "Qty", "Stock", "%Stock/Vendas"
         ])
         self.combo_ordenacao.setCurrentText("Qty")
         self.combo_ordenacao.currentTextChanged.connect(self.alterar_ordenacao)
@@ -310,16 +340,53 @@ class VendasVsStocksDialog(QDialog):
             self.df.loc[(self.df['Stock'] == 0) & (self.df['Qty'] > 0), '%Stock/Vendas'] = 0
             self.df['%Stock/Vendas'] = self.df['%Stock/Vendas'].round(2)
             
+            # NOVO: Obter dias dinamicamente
+            dias_periodo = int(self.input_dias.text()) if self.input_dias.text().isdigit() else 30
+            
             self.df['Dias Stock'] = 0
             mask_dias = (self.df['Qty'] > 0) & (self.df['Stock'].notna())
-            self.df.loc[mask_dias, 'Dias Stock'] = (self.df.loc[mask_dias, 'Stock'] / self.df.loc[mask_dias, 'Qty']) * 30
+            self.df.loc[mask_dias, 'Dias Stock'] = (self.df.loc[mask_dias, 'Stock'] / self.df.loc[mask_dias, 'Qty']) * dias_periodo
             self.df['Dias Stock'] = self.df['Dias Stock'].round(1)
+            
+            print(f"✓ Indicadores calculados com período de {dias_periodo} dias")
             
         except Exception as e:
             print(f"Erro ao calcular indicadores: {e}")
             self.df['%Stock/Vendas'] = 0
             self.df['Dias Stock'] = 0
     
+    def atualizar_dias_stock(self):
+        """Recalcula os dias de stock quando o período é alterado"""
+        if self.df is not None:
+            try:
+                # Obter novo valor de dias
+                dias_texto = self.input_dias.text()
+                if dias_texto.isdigit():
+                    dias_periodo = int(dias_texto)
+                    if 1 <= dias_periodo <= 365:
+                        # Recalcular apenas Dias Stock
+                        self.df['Dias Stock'] = 0
+                        mask_dias = (self.df['Qty'] > 0) & (self.df['Stock'].notna())
+                        self.df.loc[mask_dias, 'Dias Stock'] = (self.df.loc[mask_dias, 'Stock'] / self.df.loc[mask_dias, 'Qty']) * dias_periodo
+                        self.df['Dias Stock'] = self.df['Dias Stock'].round(1)
+                        
+                        # Atualizar tabela filtrada
+                        if self.df_filtered is not None:
+                            # Reaplicar filtros para atualizar
+                            self.filtrar_dados()
+                        
+                        print(f"✓ Dias de stock recalculados para {dias_periodo} dias")
+                    else:
+                        QMessageBox.warning(self, "Valor inválido", 
+                                        "Digite um valor entre 1 e 365 dias.")
+                        self.input_dias.setText("30")
+                else:
+                    QMessageBox.warning(self, "Valor inválido", 
+                                    "Digite um número válido de dias.")
+                    self.input_dias.setText("30")
+            except Exception as e:
+                print(f"Erro ao atualizar dias: {e}")
+
     def carregar_ficheiro(self):
         try:
             file_path, _ = QFileDialog.getOpenFileName(
@@ -363,7 +430,7 @@ class VendasVsStocksDialog(QDialog):
             self.df = self.df.loc[:, ~self.df.columns.str.contains('^Unnamed', na=False)]
 
             # Verificar colunas obrigatórias
-            colunas_necessarias = ['Artigo', 'Descrição', 'Qty', 'Stock']
+            colunas_necessarias = ['Artigo', 'Descric?o', 'Qty', 'Stock']
             colunas_faltantes = [c for c in colunas_necessarias if c not in self.df.columns]
 
             if colunas_faltantes:
@@ -403,20 +470,45 @@ class VendasVsStocksDialog(QDialog):
             self.progress_bar.setVisible(False)
 
     def preencher_filtros(self):
-        """Preenche o combo de Secção (U.Neg.) - CORRIGIDO"""
+        """Preenche todos os combobox de filtros"""
+        # Limpar todos os combobox primeiro
         self.combo_seccao.clear()
-        self.combo_seccao.addItem("Todas as Secções")
+        self.combo_status.clear()
+        self.combo_categoria.clear()
         
+        # Preencher Secção
+        self.combo_seccao.addItem("Todas as Secções")
         if self.coluna_uneg and self.coluna_uneg in self.df.columns:
             # Filtrar valores não nulos e únicos
             seccoes = self.df[self.coluna_uneg].dropna().unique()
             seccoes = sorted([str(s) for s in seccoes if str(s).strip() != ''])
-            
             print(f"Secções encontradas: {seccoes}")
             self.combo_seccao.addItems(seccoes)
         else:
             self.combo_seccao.addItem("(coluna U.Neg. não encontrada)")
             print("Aviso: Coluna U.Neg. não está disponível para filtragem")
+        
+        # NOVO: Preencher Status
+        self.combo_status.addItem("Todos Status")
+        if 'Status' in self.df.columns:
+            status_vals = self.df['Status'].dropna().unique()
+            status_vals = sorted([str(s) for s in status_vals if str(s).strip() != ''])
+            print(f"Status encontrados: {status_vals}")
+            self.combo_status.addItems(status_vals)
+        else:
+            self.combo_status.addItem("(coluna Status não encontrada)")
+            print("Aviso: Coluna Status não está disponível para filtragem")
+        
+        # NOVO: Preencher Categoria
+        self.combo_categoria.addItem("Todas Categorias")
+        if 'Cat.' in self.df.columns:
+            cat_vals = self.df['Cat.'].dropna().unique()
+            cat_vals = sorted([str(s) for s in cat_vals if str(s).strip() != ''])
+            print(f"Categorias encontradas: {cat_vals}")
+            self.combo_categoria.addItems(cat_vals)
+        else:
+            self.combo_categoria.addItem("(coluna Cat. não encontrada)")
+            print("Aviso: Coluna Cat. não está disponível para filtragem")
 
     def carregar_csv(self, file_path):
         """Carrega ficheiro CSV com deteção automática de delimitador e encoding"""
@@ -457,7 +549,7 @@ class VendasVsStocksDialog(QDialog):
         return pd.read_csv(file_path)
 
     def filtrar_dados(self):
-        """Filtra os dados por secção e limite - CORRIGIDO"""
+        """Filtra os dados por secção, status, categoria e limite"""
         if self.df is None:
             return
 
@@ -465,20 +557,39 @@ class VendasVsStocksDialog(QDialog):
 
         # Filtrar por secção se disponível
         seccao = self.combo_seccao.currentText()
-        if seccao != "Todas as Secções" and seccao != "(coluna U.Neg. não encontrada)":
+        if (seccao != "Todas as Secções" and 
+            seccao != "(coluna U.Neg. não encontrada)"):
             if self.coluna_uneg and self.coluna_uneg in self.df_filtered.columns:
-                # CORREÇÃO: Filtro direto pela coluna
                 self.df_filtered = self.df_filtered[
                     self.df_filtered[self.coluna_uneg].astype(str) == str(seccao)
                 ]
-                print(f"Filtrando por {self.coluna_uneg} = {seccao}: {len(self.df_filtered)} artigos")
-            else:
-                print(f"Aviso: Não foi possível filtrar por {seccao}")
+                print(f"Filtrando por {self.coluna_uneg} = {seccao}")
+
+        # NOVO: Filtrar por Status
+        status = self.combo_status.currentText()
+        if (status != "Todos Status" and 
+            status != "(coluna Status não encontrada)"):
+            if 'Status' in self.df_filtered.columns:
+                self.df_filtered = self.df_filtered[
+                    self.df_filtered['Status'].astype(str) == str(status)
+                ]
+                print(f"Filtrando por Status = {status}")
+
+        # NOVO: Filtrar por Categoria
+        categoria = self.combo_categoria.currentText()
+        if (categoria != "Todas Categorias" and 
+            categoria != "(coluna Cat. não encontrada)"):
+            if 'Cat.' in self.df_filtered.columns:
+                self.df_filtered = self.df_filtered[
+                    self.df_filtered['Cat.'].astype(str) == str(categoria)
+                ]
+                print(f"Filtrando por Cat. = {categoria}")
 
         # Limitar a 100 se checkbox não estiver marcado
         if not self.check_mostrar_todos.isChecked():
             self.df_filtered = self.df_filtered.head(100)
 
+        print(f"Total após filtragem: {len(self.df_filtered)} artigos")
         self.aplicar_ordenacao()
 
     def alterar_ordenacao(self, coluna):
@@ -528,11 +639,10 @@ class VendasVsStocksDialog(QDialog):
         
         try:
             self.table.setRowCount(len(self.df_filtered))
-            self.table.setColumnCount(12)
+            self.table.setColumnCount(9)
             self.table.setHorizontalHeaderLabels([
-                'Artigo', 'Descrição', 'Status', 'Cat.', 'Sub-C.', 'Qty', 
-                'Stock', '%Stock/Vendas', 'Dias Stock', 'Total P/Venda', 
-                'Margem %', 'Vendas -Descontos'
+                'Artigo', 'Descrição', 'Status', 'Cat.', 'Qty', 
+                'Stock', '%Stock/Vendas', 'Dias Stock', 'Total P/Venda'
             ])
             
             if not self.df_filtered.empty:
@@ -545,7 +655,7 @@ class VendasVsStocksDialog(QDialog):
                 item_artigo.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 self.table.setItem(row_idx, 0, item_artigo)
                 
-                descricao = str(row['Descrição']) if pd.notna(row['Descrição']) else "N/A"
+                descricao = str(row['Descric?o']) if pd.notna(row['Descric?o']) else "N/A"
                 item_desc = QTableWidgetItem(descricao)
                 item_desc.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 self.table.setItem(row_idx, 1, item_desc)
@@ -558,12 +668,8 @@ class VendasVsStocksDialog(QDialog):
                 categoria = str(row['Cat.']) if 'Cat.' in row and pd.notna(row['Cat.']) else "N/A"
                 item_cat = QTableWidgetItem(categoria)
                 item_cat.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 3, item_cat)
-                
-                subcat = str(row['Sub-C.']) if 'Sub-C.' in row and pd.notna(row['Sub-C.']) else "N/A"
-                item_subcat = QTableWidgetItem(subcat)
-                item_subcat.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 4, item_subcat)
+                self.table.setItem(row_idx, 3, item_cat)               
+               
                 
                 qty_value = row['Qty'] if pd.notna(row['Qty']) else 0
                 item_qty = QTableWidgetItem(f"{qty_value:,.0f}")
@@ -582,12 +688,12 @@ class VendasVsStocksDialog(QDialog):
                     item_qty.setBackground(QColor(red, green, blue))
                     item_qty.setForeground(QColor(0, 0, 0))
                 
-                self.table.setItem(row_idx, 5, item_qty)
+                self.table.setItem(row_idx, 4, item_qty)
                 
                 stock_value = row['Stock'] if pd.notna(row['Stock']) else 0
                 item_stock = QTableWidgetItem(f"{stock_value:,.0f}")
                 item_stock.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 6, item_stock)
+                self.table.setItem(row_idx, 5, item_stock)
                 
                 percentual = row.get('%Stock/Vendas', 0) if pd.notna(row.get('%Stock/Vendas', 0)) else 0
                 if percentual == 99999:
@@ -605,27 +711,19 @@ class VendasVsStocksDialog(QDialog):
                     else:
                         item_percent.setBackground(QColor(200, 255, 200))
                 
-                self.table.setItem(row_idx, 7, item_percent)
+                self.table.setItem(row_idx, 6, item_percent)
                 
                 dias_stock = row.get('Dias Stock', 0) if pd.notna(row.get('Dias Stock', 0)) else 0
                 item_dias = QTableWidgetItem(f"{dias_stock:.1f}")
                 item_dias.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 8, item_dias)
+                self.table.setItem(row_idx, 7, item_dias)
                 
                 total_venda = row['Total P/Venda'] if 'Total P/Venda' in row and pd.notna(row['Total P/Venda']) else 0
                 item_venda = QTableWidgetItem(f"€ {total_venda:,.2f}")
                 item_venda.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 9, item_venda)
+                self.table.setItem(row_idx, 8, item_venda)
                 
-                margem = row['Margem %'] if 'Margem %' in row and pd.notna(row['Margem %']) else 0
-                item_margem = QTableWidgetItem(f"{margem:.1f}%")
-                item_margem.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 10, item_margem)
-                
-                vendas_descontos = row['Vendas -Descontos'] if 'Vendas -Descontos' in row and pd.notna(row['Vendas -Descontos']) else 0
-                item_vendas_desc = QTableWidgetItem(f"€ {vendas_descontos:,.2f}")
-                item_vendas_desc.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.table.setItem(row_idx, 11, item_vendas_desc)
+               
             
             header = self.table.horizontalHeader()
             header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -637,9 +735,7 @@ class VendasVsStocksDialog(QDialog):
             header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
             header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
             header.setSectionResizeMode(8, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(9, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(10, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(11, QHeaderView.ResizeToContents)
+            
             
             self.label_contador.setText(f"Total de artigos: {len(self.df_filtered):,}")
             
@@ -683,18 +779,21 @@ class VendasVsStocksDialog(QDialog):
             cursor.insertText("ANÁLISE VENDAS VS STOCKS\n\n")
 
             info = f"Secção: {self.combo_seccao.currentText()} | " \
-                   f"Total artigos: {len(self.df_filtered):,} | " \
-                   f"Gerado em: {pd.Timestamp.now():%d/%m/%Y %H:%M}\n\n"
+                f"Período vendas: {self.input_dias.text()} dias | " \
+                f"Total artigos: {len(self.df_filtered):,} | " \
+                f"Gerado em: {pd.Timestamp.now():%d/%m/%Y %H:%M}\n\n"
             
             cursor.insertText(info)
 
+            # MODIFICADO: Removidas colunas 'Sub-C.', 'Margem%', 'Vendas-Desc'
             headers = [
-                'Artigo', 'Descrição', 'Status', 'Cat.', 'Sub-C.', 'Qty', 
-                'Stock', '%S/V', 'Dias', 'Total Venda', 'Margem%', 'Vendas-Desc'
+                'Artigo', 'Descrição', 'Status', 'Cat.', 'Qty', 
+                'Stock', '%S/V', 'Dias', 'Total Venda'
             ]
 
+            # MODIFICADO: Ajustadas larguras percentuais (total deve ser 100)
             larguras_percentagem = [
-                8, 25, 6, 6, 7, 7, 7, 6, 5, 8, 6, 9
+                10, 30, 8, 8, 10, 10, 8, 7, 9  # Total: 100%
             ]
 
             table_fmt = QTextTableFormat()
@@ -730,19 +829,18 @@ class VendasVsStocksDialog(QDialog):
                     cell = table.cellAt(row_idx, col_idx)
                     cur = cell.firstCursorPosition()
 
+                    # MODIFICADO: Mapeamento atualizado sem as colunas removidas
                     col_mapping = {
                         'Artigo': 'Artigo',
-                        'Descrição': 'Descrição', 
+                        'Descrição': 'Descric?o', 
                         'Status': 'Status',
                         'Cat.': 'Cat.',
-                        'Sub-C.': 'Sub-C.',
                         'Qty': 'Qty',
                         'Stock': 'Stock',
                         '%S/V': '%Stock/Vendas',
                         'Dias': 'Dias Stock',
-                        'Total Venda': 'Total P/Venda',
-                        'Margem%': 'Margem %',
-                        'Vendas-Desc': 'Vendas -Descontos'
+                        'Total Venda': 'Total P/Venda'
+                        # Removidas: 'Sub-C.', 'Margem%', 'Vendas-Desc'
                     }
                     
                     coluna_real = col_mapping[col_name]
@@ -751,19 +849,17 @@ class VendasVsStocksDialog(QDialog):
                     if pd.isna(value):
                         text = "N/A"
                     else:
-                        if coluna_real == "Descrição":
+                        if coluna_real == "Descric?o":
                             desc = str(value)
                             text = desc if len(desc) <= 35 else desc[:32] + "..."
                         elif coluna_real in ["Qty", "Stock"]:
                             text = f"{int(value):,}" if value else "0"
-                        elif coluna_real in ["Total P/Venda", "Vendas -Descontos"]:
+                        elif coluna_real == "Total P/Venda":
                             text = f"€{float(value):,.0f}" if value else "€0"
                         elif coluna_real == "%Stock/Vendas":
                             text = "N/A" if value == 99999 else f"{value:.1f}%"
                         elif coluna_real == "Dias Stock":
                             text = f"{value:.1f}" if value else "0.0"
-                        elif coluna_real == "Margem %":
-                            text = f"{value:.1f}%" if value else "0.0%"
                         else:
                             text = str(value)
 
@@ -784,7 +880,8 @@ class VendasVsStocksDialog(QDialog):
                 self, "Sucesso",
                 f"PDF exportado com sucesso!\n\n"
                 f"→ {len(self.df_filtered):,} artigos exportados\n"
-                f"→ Guardado em: {os.path.basename(file_path)}"
+                f"→ Guardado em: {os.path.basename(file_path)}\n"
+                f"→ Colunas: {', '.join(headers)}"
             )
 
         except Exception as e:
@@ -808,7 +905,7 @@ class VendasVsStocksDialog(QDialog):
                 self.progress_bar.setValue(50)
                 
                 colunas_export = [
-                    'Artigo', 'Descrição', 'Status', 'Cat.', 'Sub-C.', 'Qty', 
+                    'Artigo', 'Descric?o', 'Status', 'Cat.', 'Sub-C.', 'Qty', 
                     'Stock', '%Stock/Vendas', 'Dias Stock', 'Total P/Venda', 
                     'Margem %', 'Vendas -Descontos'
                 ]
@@ -856,8 +953,15 @@ class VendasVsStocksDialog(QDialog):
         self.table.setRowCount(0)
         self.label_file.setText("Nenhum ficheiro carregado")
 
+        # Limpar todos os combobox
         self.combo_seccao.clear()
         self.combo_seccao.addItem("Todas as Secções")
+        
+        self.combo_status.clear()
+        self.combo_status.addItem("Todos Status")
+        
+        self.combo_categoria.clear()
+        self.combo_categoria.addItem("Todas Categorias")
 
         self.check_mostrar_todos.setChecked(False)
         self.label_contador.setText("Total de artigos: 0")
