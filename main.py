@@ -1,7 +1,35 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
 import sys
+import multiprocessing
+
+# ✅ CRÍTICO: Configuração para PyInstaller
+# Deteta se está a correr como executável PyInstaller
+if getattr(sys, 'frozen', False):
+    # Executável PyInstaller
+    RUNNING_AS_EXECUTABLE = True
+    # No PyInstaller, sempre usar n_jobs=1 para evitar problemas
+    ML_N_JOBS = 1
+    print("[ML CONFIG] Executável PyInstaller detectado - n_jobs: 1")
+else:
+    # Python normal
+    RUNNING_AS_EXECUTABLE = False
+    if sys.platform.startswith('win'):
+        ML_N_JOBS = 1
+    else:
+        ML_N_JOBS = -1
+    print(f"[ML CONFIG] Python normal - Sistema: {sys.platform}, n_jobs: {ML_N_JOBS}")
+
+# Configuração multiprocessing (importante para PyInstaller)
+if sys.platform.startswith('win') or RUNNING_AS_EXECUTABLE:
+    multiprocessing.freeze_support()
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass  # Já foi configurado
+
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QPushButton, QLabel, QFrame, QHBoxLayout, QMessageBox)
 from PyQt5.QtCore import Qt
@@ -62,7 +90,7 @@ class MainWindow(QMainWindow):
         btn_hit_parade.clicked.connect(self.abrir_hit_parade)
         buttons_layout.addWidget(btn_hit_parade)
         
-        # Botão Tendências
+        # Botão Tendências - Merchorg
         btn_tendencias = QPushButton("📈 Tendências - Merchorg")
         btn_tendencias.setFont(QFont("Arial", 14))
         btn_tendencias.setMinimumHeight(80)
@@ -83,6 +111,28 @@ class MainWindow(QMainWindow):
         """)
         btn_tendencias.clicked.connect(self.abrir_tendencias)
         buttons_layout.addWidget(btn_tendencias)
+        
+        # NOVO BOTÃO: Tendências - Daily Sales
+        btn_tendencias_daily = QPushButton("📊 Tendências - Daily Sales")
+        btn_tendencias_daily.setFont(QFont("Arial", 14))
+        btn_tendencias_daily.setMinimumHeight(80)
+        btn_tendencias_daily.setStyleSheet("""
+            QPushButton {
+                background-color: #009688;
+                color: white;
+                border: none;
+                border-radius: 10px;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #00796B;
+            }
+            QPushButton:pressed {
+                background-color: #00695C;
+            }
+        """)
+        btn_tendencias_daily.clicked.connect(self.abrir_tendencias_daily)
+        buttons_layout.addWidget(btn_tendencias_daily)
         
         # Botão Artigos Únicos
         btn_artigos_unicos = QPushButton("🔍 Artigos Únicos - Merchorg vs Daily Sales")
@@ -210,6 +260,15 @@ class MainWindow(QMainWindow):
             mostrar_tendencias()
         except Exception as e:
             self.mostrar_erro(f"Erro ao abrir Tendências: {e}")
+    
+    def abrir_tendencias_daily(self):
+        """Abre o módulo Tendências - Daily Sales"""
+        try:
+            # NOVO: Importar o novo módulo
+            from tendenciasDaily import mostrar_tendencias_daily
+            mostrar_tendencias_daily()
+        except Exception as e:
+            self.mostrar_erro(f"Erro ao abrir Tendências - Daily Sales: {e}")
     
     def abrir_artigos_unicos(self):
         try:
