@@ -205,6 +205,27 @@ class MainWindow(QMainWindow):
         
         # Espaçador
         layout.addStretch()
+
+        # Botão Top N Artigos
+        btn_top_n = QPushButton("🏅 Top N Artigos")
+        btn_top_n.setFont(QFont("Arial", 14))
+        btn_top_n.setMinimumHeight(80)
+        btn_top_n.setStyleSheet("""
+            QPushButton {
+                background-color: #FF5722;
+                color: white;
+                border: none;
+                border-radius: 10px;
+                padding: 10px;
+            }
+            QPushButton:hover { background-color: #E64A19; }
+            QPushButton:pressed { background-color: #BF360C; }
+        """)
+        btn_top_n.clicked.connect(self.abrir_top_n)
+        buttons_layout.addWidget(btn_top_n)
+
+        # Espaçador
+        layout.addStretch()
         
         # Botão Fechar Aplicação
         btn_fechar_layout = QHBoxLayout()
@@ -290,6 +311,13 @@ class MainWindow(QMainWindow):
             mostrar_vendas_stocks()
         except Exception as e:
             self.mostrar_erro(f"Erro ao abrir Vendas vs Stocks: {e}")
+
+    def abrir_top_n(self):
+        try:
+            from top10 import mostrar_top10
+            mostrar_top10()
+        except Exception as e:
+            self.mostrar_erro(f"Erro ao abrir Top N: {e}")
     
     def mostrar_erro(self, mensagem):
         QMessageBox.critical(self, "Erro", mensagem)
