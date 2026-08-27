@@ -1,3 +1,4 @@
+# top10.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -28,6 +29,8 @@ class TopNDialog(QDialog):
         self.df = None
         self.df_top = None
         self.df_filtrado = None
+        self.modo_atual = 'top'          # 'top' ou 'pareto'
+        self.metrica_pareto_atual = None
         self.initUI()
 
     def initUI(self):
@@ -135,6 +138,36 @@ class TopNDialog(QDialog):
 
         layout.addLayout(config_layout)
 
+        # --- Linha do Pareto 80/20 ---
+        pareto_layout = QHBoxLayout()
+        pareto_layout.addWidget(QLabel("Regra 80/20 (Pareto) por:"))
+
+        self.combo_pareto_metrica = QComboBox()
+        self.combo_pareto_metrica.addItems(["Sales Value", "Unit Sales"])
+        self.combo_pareto_metrica.setMinimumWidth(120)
+        pareto_layout.addWidget(self.combo_pareto_metrica)
+
+        self.btn_pareto = QPushButton("📊 Top 80/20 (Pareto)")
+        self.btn_pareto.setFont(QFont("Arial", 12))
+        self.btn_pareto.setMinimumHeight(40)
+        self.btn_pareto.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 10px;
+            }
+            QPushButton:hover { background-color: #e68900; }
+            QPushButton:disabled { background-color: #cccccc; color: #666; }
+        """)
+        self.btn_pareto.setEnabled(False)
+        self.btn_pareto.clicked.connect(self.calcular_pareto)
+        pareto_layout.addWidget(self.btn_pareto)
+
+        pareto_layout.addStretch()
+        layout.addLayout(pareto_layout)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
@@ -234,7 +267,6 @@ class TopNDialog(QDialog):
             else:
                 self.df = self._carregar_csv(file_path)
 
-            # Limpeza reforçada dos nomes das colunas
             self.df.columns = self.df.columns.str.strip()
 
             self.progress_bar.setValue(50)
@@ -242,7 +274,6 @@ class TopNDialog(QDialog):
             colunas_necessarias = ['Sku', 'Unit Sales', 'Sales Value', 'PVP Em Vigor', 'Merc.Struct Code']
             faltam = [c for c in colunas_necessarias if c not in self.df.columns]
             if faltam:
-                # Mostrar as primeiras linhas para diagnóstico
                 primeiras_linhas = self.df.head(2).to_string()
                 QMessageBox.critical(
                     self, "Erro",
@@ -254,28 +285,23 @@ class TopNDialog(QDialog):
                 self.progress_bar.setVisible(False)
                 return
 
-            # Criar Categoria
             self.df['Categoria'] = self.df['Merc.Struct Code'].astype(str).str[:8]
 
-            # Converter para numérico
             self.df['Unit Sales'] = pd.to_numeric(self.df['Unit Sales'], errors='coerce').fillna(0)
             self.df['Sales Value'] = pd.to_numeric(self.df['Sales Value'], errors='coerce').fillna(0)
             self.df['PVP Em Vigor'] = pd.to_numeric(self.df['PVP Em Vigor'], errors='coerce').fillna(0)
 
-            # SKU numérico para novidade
             try:
                 self.df['Sku_num'] = pd.to_numeric(self.df['Sku'], errors='coerce')
             except:
                 self.df['Sku_num'] = self.df['Sku'].astype(str).apply(lambda x: int(x) if x.isdigit() else hash(x))
 
-            # Colunas de Stock -> soma numa única coluna
             stock_cols = ['Stock', 'Stock In Transit', 'Stock Expected', 'Stock On Order']
             existentes = [c for c in stock_cols if c in self.df.columns]
             for c in existentes:
                 self.df[c] = pd.to_numeric(self.df[c], errors='coerce').fillna(0)
             self.df['Stock Total'] = self.df[existentes].sum(axis=1) if existentes else 0
 
-            # Warehouse (se não existir, cria vazia para não rebentar a tabela)
             if 'Warehouse' not in self.df.columns:
                 self.df['Warehouse'] = ''
 
@@ -285,6 +311,7 @@ class TopNDialog(QDialog):
 
             self.label_file.setText(os.path.basename(file_path))
             self.btn_calcular.setEnabled(True)
+            self.btn_pareto.setEnabled(True)
             self.btn_exportar_excel.setEnabled(False)
             self.btn_exportar_pdf.setEnabled(False)
 
@@ -304,7 +331,6 @@ class TopNDialog(QDialog):
             self.progress_bar.setVisible(False)
 
     def _carregar_csv(self, file_path):
-        """Tenta carregar CSV com deteção robusta de delimitador e encoding"""
         encodings = ['utf-8', 'latin-1', 'cp1252']
         delimiters = [';', ',', '\t', '|']
         
@@ -312,16 +338,13 @@ class TopNDialog(QDialog):
             for delim in delimiters:
                 try:
                     df = pd.read_csv(file_path, encoding=enc, sep=delim, engine='python')
-                    # Limpar espaços nos nomes das colunas
                     df.columns = df.columns.str.strip()
-                    # Verifica se conseguiu separar corretamente (pelo menos 3 colunas)
                     if len(df.columns) > 2 and 'Sku' in df.columns:
                         print(f"CSV lido com encoding={enc}, delimitador='{delim}'")
                         return df
                 except:
                     continue
         
-        # Fallback: usar Sniffer
         try:
             with open(file_path, 'r', encoding='latin-1') as f:
                 sample = f.read(1024)
@@ -336,7 +359,6 @@ class TopNDialog(QDialog):
             raise Exception(f"Não foi possível ler o CSV: {str(e)}")
 
     def _preencher_filtros(self):
-        """Preenche os comboboxes com valores únicos"""
         categorias = sorted(self.df['Categoria'].dropna().unique())
         self.combo_categoria.clear()
         self.combo_categoria.addItem("Todas")
@@ -365,7 +387,6 @@ class TopNDialog(QDialog):
             self.combo_brand.setEnabled(False)
 
     def aplicar_filtros(self):
-        """Aplica os filtros e atualiza self.df_filtrado"""
         if self.df is None:
             return
 
@@ -390,6 +411,7 @@ class TopNDialog(QDialog):
             QMessageBox.warning(self, "Aviso", "Não há dados após aplicar os filtros.")
             return
 
+        self.modo_atual = 'top'
         try:
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(10)
@@ -473,13 +495,88 @@ class TopNDialog(QDialog):
         finally:
             self.progress_bar.setVisible(False)
 
+    def calcular_pareto(self):
+        """Calcula quantos artigos (e que %) perfazem 80% das vendas — Unit Sales e Sales Value."""
+        if self.df_filtrado is None or self.df_filtrado.empty:
+            QMessageBox.warning(self, "Aviso", "Não há dados após aplicar os filtros.")
+            return
+
+        try:
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(20)
+
+            metrica_col = self.combo_pareto_metrica.currentText()
+            df_base = self.df_filtrado.copy()
+            total_artigos = len(df_base)
+
+            resumo = []
+            for col in ['Unit Sales', 'Sales Value']:
+                df_tmp = df_base[df_base[col] > 0].sort_values(col, ascending=False).reset_index(drop=True)
+                total_col = df_tmp[col].sum()
+                if total_col <= 0 or df_tmp.empty:
+                    resumo.append(f"• {col}: sem vendas > 0 nos dados filtrados.")
+                    continue
+                cum_pct = df_tmp[col].cumsum() / total_col * 100
+                corte = int((cum_pct >= 80).idxmax())
+                n_artigos = corte + 1
+                pct_artigos = n_artigos / total_artigos * 100
+                resumo.append(
+                    f"• {col}: {n_artigos:,} artigos ({pct_artigos:.1f}% do total filtrado) geram 80%"
+                )
+
+            self.progress_bar.setValue(50)
+
+            df_pareto = df_base[df_base[metrica_col] > 0].sort_values(metrica_col, ascending=False).reset_index(drop=True)
+            if df_pareto.empty:
+                QMessageBox.warning(self, "Aviso", f"Nenhum artigo com {metrica_col} > 0 após os filtros.")
+                self.progress_bar.setVisible(False)
+                return
+
+            total_metrica = df_pareto[metrica_col].sum()
+            df_pareto['cum_pct'] = df_pareto[metrica_col].cumsum() / total_metrica * 100
+            corte = int((df_pareto['cum_pct'] >= 80).idxmax())
+            df_pareto_top = df_pareto.iloc[:corte + 1].copy()
+
+            self.df_top = df_pareto_top.reset_index(drop=True)
+            self.modo_atual = 'pareto'
+            self.metrica_pareto_atual = metrica_col
+
+            self.progress_bar.setValue(80)
+            self.atualizar_tabela(self.df_top)
+            self.progress_bar.setValue(100)
+
+            self.btn_exportar_excel.setEnabled(True)
+            self.btn_exportar_pdf.setEnabled(True)
+
+            n_pareto = len(df_pareto_top)
+            pct_pareto = n_pareto / total_artigos * 100
+
+            QMessageBox.information(
+                self, "Análise 80/20 (Pareto)",
+                "Regra 80/20 nos dados filtrados:\n\n" + "\n".join(resumo) +
+                f"\n\nTabela e exportação carregadas com os {n_pareto:,} artigos "
+                f"({pct_pareto:.1f}% do total filtrado) que geram 80% de {metrica_col}."
+            )
+
+        except Exception as e:
+            QMessageBox.critical(self, "Erro", f"Erro ao calcular Pareto: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+        finally:
+            self.progress_bar.setVisible(False)
+
     def atualizar_tabela(self, df):
         if df is None or df.empty:
             self.table.setRowCount(0)
             return
 
+        if self.modo_atual == 'pareto':
+            ultima_label = '% Acumulada'
+        else:
+            ultima_label = 'Score'
+
         colunas = ['Posição', 'Sku', 'Description', 'Categoria', 'Warehouse',
-                   'PVP Em Vigor', 'Stock', 'Unit Sales', 'Sales Value', 'Score']
+                   'PVP Em Vigor', 'Stock', 'Unit Sales', 'Sales Value', ultima_label]
         self.table.setRowCount(len(df))
         self.table.setColumnCount(len(colunas))
         self.table.setHorizontalHeaderLabels(colunas)
@@ -528,10 +625,15 @@ class TopNDialog(QDialog):
             item_valor.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.table.setItem(i, 8, item_valor)
 
-            score = row['score'] if pd.notna(row['score']) else 0
-            item_score = QTableWidgetItem(f"{score:.4f}")
-            item_score.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self.table.setItem(i, 9, item_score)
+            if self.modo_atual == 'pareto':
+                ultimo_valor = row['cum_pct'] if pd.notna(row.get('cum_pct')) else 0
+                texto_ultimo = f"{ultimo_valor:.1f}%"
+            else:
+                ultimo_valor = row['score'] if pd.notna(row.get('score')) else 0
+                texto_ultimo = f"{ultimo_valor:.4f}"
+            item_ultimo = QTableWidgetItem(texto_ultimo)
+            item_ultimo.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.table.setItem(i, 9, item_ultimo)
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -561,6 +663,12 @@ class TopNDialog(QDialog):
             df_export.insert(0, 'Posição', range(1, len(df_export)+1))
             if 'Stock Total' in df_export.columns:
                 df_export.rename(columns={'Stock Total': 'Stock'}, inplace=True)
+
+            if self.modo_atual == 'pareto' and 'cum_pct' in df_export.columns:
+                df_export.rename(columns={'cum_pct': '% Acumulada'}, inplace=True)
+            elif 'score' in df_export.columns:
+                df_export.rename(columns={'score': 'Score'}, inplace=True)
+
             for col in ['norm_sales', 'norm_value', 'norm_price', 'norm_sku', 'Sku_num',
                         'Stock In Transit', 'Stock Expected', 'Stock On Order']:
                 if col in df_export.columns:
@@ -616,7 +724,8 @@ class TopNDialog(QDialog):
             info = f"Total: {len(self.df_top):,} | Gerado em: {pd.Timestamp.now():%d/%m/%Y %H:%M}\n\n"
             cursor.insertText(info)
 
-            headers = ['Pos.', 'Sku', 'Description', 'Cat.', 'Wh.', 'PVP', 'Stock', 'Vendas', 'Valor', 'Score']
+            headers = ['Pos.', 'Sku', 'Description', 'Cat.', 'Wh.', 'PVP', 'Stock', 'Vendas', 'Valor',
+                       '% Acum.' if self.modo_atual == 'pareto' else 'Score']
             larguras = [4, 8, 24, 7, 6, 7, 7, 8, 10, 7]
 
             table_fmt = QTextTableFormat()
@@ -645,6 +754,11 @@ class TopNDialog(QDialog):
             normal_fmt.setFontPointSize(8)
 
             for row_idx, (_, row) in enumerate(self.df_top.iterrows(), start=1):
+                if self.modo_atual == 'pareto':
+                    ultima_val = f"{row['cum_pct']:.1f}%" if pd.notna(row.get('cum_pct')) else '0%'
+                else:
+                    ultima_val = f"{row['score']:.4f}" if pd.notna(row.get('score')) else '0'
+
                 valores = [
                     str(row_idx),
                     str(row['Sku']),
@@ -655,7 +769,7 @@ class TopNDialog(QDialog):
                     f"{row['Stock Total']:,.0f}" if pd.notna(row.get('Stock Total')) else '0',
                     f"{int(row['Unit Sales']):,}" if pd.notna(row['Unit Sales']) else '0',
                     f"€{row['Sales Value']:,.2f}" if pd.notna(row['Sales Value']) else '€0',
-                    f"{row['score']:.4f}" if pd.notna(row['score']) else '0'
+                    ultima_val
                 ]
                 for col_idx, text in enumerate(valores):
                     cell = table.cellAt(row_idx, col_idx)
