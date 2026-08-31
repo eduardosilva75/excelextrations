@@ -748,8 +748,7 @@ class ArtigosUnicosDialog(QDialog):
 
         try:
             # Configuração PDF (A4 Landscape)
-            printer = QPrinter(QPrinter.HighResolution)
-            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer = QPrinter(QPrinter.HighResolution)            
             printer.setOutputFileName(file_path)
 
             layout = QPageLayout(

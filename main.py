@@ -30,8 +30,9 @@ if sys.platform.startswith('win') or RUNNING_AS_EXECUTABLE:
     except RuntimeError:
         pass  # Já foi configurado
 
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QPushButton, QLabel, QFrame, QHBoxLayout, QMessageBox)
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                             QGridLayout, QPushButton, QLabel, QFrame, QHBoxLayout,
+                             QMessageBox)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 
@@ -39,7 +40,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Sistema de Comparação de Excel")
-        self.setGeometry(100, 100, 800, 700)
+        self.setGeometry(100, 50, 900, 620)
         
         # Widget central
         central_widget = QWidget()
@@ -63,9 +64,9 @@ class MainWindow(QMainWindow):
         subtitle.setStyleSheet("color: #666; margin-bottom: 20px;")
         layout.addWidget(subtitle)
         
-        # Frame para os botões
+        # Frame para os botões (grelha 2 colunas)
         buttons_frame = QFrame()
-        buttons_layout = QVBoxLayout()
+        buttons_layout = QGridLayout()
         buttons_layout.setSpacing(15)
         
         # Botão Hit Parade por Secção
@@ -88,7 +89,6 @@ class MainWindow(QMainWindow):
             }
         """)
         btn_hit_parade.clicked.connect(self.abrir_hit_parade)
-        buttons_layout.addWidget(btn_hit_parade)
         
         # Botão Tendências - Merchorg
         btn_tendencias = QPushButton("📈 Tendências - Merchorg")
@@ -110,9 +110,8 @@ class MainWindow(QMainWindow):
             }
         """)
         btn_tendencias.clicked.connect(self.abrir_tendencias)
-        buttons_layout.addWidget(btn_tendencias)
         
-        # NOVO BOTÃO: Tendências - Daily Sales
+        # Botão Tendências - Daily Sales
         btn_tendencias_daily = QPushButton("📊 Tendências - Daily Sales")
         btn_tendencias_daily.setFont(QFont("Arial", 14))
         btn_tendencias_daily.setMinimumHeight(80)
@@ -132,7 +131,6 @@ class MainWindow(QMainWindow):
             }
         """)
         btn_tendencias_daily.clicked.connect(self.abrir_tendencias_daily)
-        buttons_layout.addWidget(btn_tendencias_daily)
         
         # Botão Artigos Únicos
         btn_artigos_unicos = QPushButton("🔍 Artigos Únicos - Merchorg vs Daily Sales")
@@ -154,7 +152,6 @@ class MainWindow(QMainWindow):
             }
         """)
         btn_artigos_unicos.clicked.connect(self.abrir_artigos_unicos)
-        buttons_layout.addWidget(btn_artigos_unicos)
         
         # Botão Artigos sem PS
         btn_artigos_sem_ps = QPushButton("📊 Artigos sem PS - Merchorg")
@@ -176,7 +173,6 @@ class MainWindow(QMainWindow):
             }
         """)
         btn_artigos_sem_ps.clicked.connect(self.abrir_artigos_sem_ps)
-        buttons_layout.addWidget(btn_artigos_sem_ps)
         
         # Botão Vendas vs Stocks
         btn_vendas_stocks = QPushButton("📦 Vendas vs Stocks - Daily Sales")
@@ -198,13 +194,6 @@ class MainWindow(QMainWindow):
             }
         """)
         btn_vendas_stocks.clicked.connect(self.abrir_vendas_stocks)
-        buttons_layout.addWidget(btn_vendas_stocks)
-        
-        buttons_frame.setLayout(buttons_layout)
-        layout.addWidget(buttons_frame)
-        
-        # Espaçador
-        layout.addStretch()
 
         # Botão Top N Artigos
         btn_top_n = QPushButton("🏅 Top N Artigos")
@@ -222,8 +211,22 @@ class MainWindow(QMainWindow):
             QPushButton:pressed { background-color: #BF360C; }
         """)
         btn_top_n.clicked.connect(self.abrir_top_n)
-        buttons_layout.addWidget(btn_top_n)
 
+        # Distribuição na grelha: 2 colunas, 4 linhas (o último botão ocupa a linha toda)
+        buttons_layout.addWidget(btn_hit_parade, 0, 0)
+        buttons_layout.addWidget(btn_tendencias, 0, 1)
+
+        buttons_layout.addWidget(btn_tendencias_daily, 1, 0)
+        buttons_layout.addWidget(btn_artigos_unicos, 1, 1)
+
+        buttons_layout.addWidget(btn_artigos_sem_ps, 2, 0)
+        buttons_layout.addWidget(btn_vendas_stocks, 2, 1)
+
+        buttons_layout.addWidget(btn_top_n, 3, 0, 1, 2)  # ocupa as duas colunas
+
+        buttons_frame.setLayout(buttons_layout)
+        layout.addWidget(buttons_frame)
+        
         # Espaçador
         layout.addStretch()
         
@@ -285,7 +288,6 @@ class MainWindow(QMainWindow):
     def abrir_tendencias_daily(self):
         """Abre o módulo Tendências - Daily Sales"""
         try:
-            # NOVO: Importar o novo módulo
             from tendenciasDaily import mostrar_tendencias_daily
             mostrar_tendencias_daily()
         except Exception as e:
